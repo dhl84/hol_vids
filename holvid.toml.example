@@ -1,0 +1,81 @@
+# holvid.toml — per-vacation project config.
+#
+# Copy this into your footage folder as `holvid.toml` and edit. Every field is
+# optional; delete anything you want to leave at its default. The values below
+# are the real Paris 2026 settings, kept as a worked example.
+#
+# Run from anywhere:   uv run holvid "/path/to/footage" sheets
+#                      uv run holvid "/path/to/footage" build
+
+# --- identity -------------------------------------------------------------
+title      = "Mehar and Samuel in Paris, 2026"   # opening movie title
+event_name = "Paris 2026"                          # FCP event/project name
+
+# Footage root, relative to this file. Default "." = this folder. The clips
+# usually live in one subfolder per day (e.g. 28-May/, 29-May/).
+root = "."
+
+# Clips shot vertical (stored landscape + a 90° flag). FCP mishandles portrait +
+# conform, so `holvid <project> upright` bakes a pillarboxed landscape copy first.
+# Leave this out to auto-detect from rotation metadata (auto_detect_rotation).
+rotated_clips        = ["DJI_20260529120417_0007_D.MP4"]
+auto_detect_rotation = true
+fcpxml_version       = "1.9"
+
+# --- finding clips + reading their time -----------------------------------
+[discovery]
+# globs relative to root, matched for video files (day-subfolders + loose files):
+patterns = ["*/*.MP4", "*/*.mp4", "*/*.MOV", "*/*.mov",
+            "*.MP4", "*.mp4", "*.MOV", "*.mov"]
+# filename -> datetime: capture Y M D h m s (+ optional sequence no.).
+# Default matches DJI action cams. Falls back to creation_time, then mtime.
+filename_regex = '(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2}).*?(\d+)?'
+
+# --- timezone (titles show LOCAL time) ------------------------------------
+[timezone]
+# Hours added to every clip's camera time to get local wall-clock time.
+# Paris: the camera ran on UTC+1 (London) all trip; Paris is +1 more -> 1.
+offset_hours = 1
+# Exceptions that should use camera time as-is (e.g. the St Pancras clips,
+# shot in London before crossing to Paris):
+camera_time_clips = ["DJI_20260528144150_0001_D.MP4",
+                     "DJI_20260528144522_0002_D.MP4"]
+
+# --- title styling + timing -----------------------------------------------
+[titles]
+opening_s            = 5.0   # opening title duration over the first clip
+day_title_s          = 4.0   # day-divider title
+location_title_s     = 4.0   # location lower-third
+opening_font_size    = 84
+day_font_size        = 96
+location_font_size   = 60
+location_y           = -360  # lower-third vertical position (0 = centre)
+font                 = "Helvetica Neue"
+date_format          = "%A %-d %B %Y"      # day divider -> "Thursday 28 May 2026"
+location_stamp_format = "%-d %b · %H:%M"   # under location -> "28 May · 18:48"
+
+# --- transitions ----------------------------------------------------------
+[transitions]
+enabled      = true
+dissolve_s   = 1.0   # scene/day-boundary cross-dissolve length
+start_fade_s = 1.0   # fade up at the very start (0 disables)
+end_fade_s   = 2.0   # fade to black at the very end (0 disables)
+# clip pairs that are ONE continuous recording split across files -> hard join:
+continuous_seams = [["DJI_20260530130913_0012_D.MP4",
+                     "DJI_20260530132741_0013_D.MP4"]]
+
+# --- automatic cuts vs review markers -------------------------------------
+[cuts]
+min_dead_s = 3.0   # ignore flagged dead spans shorter than this
+# A dead span is REMOVED if its reason mentions a cut-word; otherwise it's left
+# as a REVIEW marker for you to judge in FCP.
+cut_words  = ["ground", "feet", "floor", "blur", "black", "wall", "face",
+              "backpack", "ceiling", "underexposed", "lens", "blank", "pavement"]
+keep_words = ["dark interior"]   # win over cut_words: keep as a marker
+
+# --- contact-sheet sampling -----------------------------------------------
+[sheets]
+interval_s = 6     # seconds between sampled frames
+cols       = 6     # tiles per row (fixed, so tile position -> time is exact)
+max_rows   = 12    # tall-clip cap; longer clips spill onto extra sheets
+tile_w     = 384   # thumbnail width (px); height keeps aspect

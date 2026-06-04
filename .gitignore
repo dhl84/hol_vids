@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# OS junk
+.DS_Store
+
+# Per-project edit artifacts (generated next to the footage, not here — but
+# ignore them if anyone runs a project from inside this repo)
+_edit/

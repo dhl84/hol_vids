@@ -1,0 +1,13 @@
+[project]
+name = "hol-vids"
+version = "0.1.0"
+description = "Turn a folder of raw vacation clips into a titled, review-ready Final Cut Pro timeline — fully local."
+readme = "README.md"
+requires-python = ">=3.11"          # tomllib is stdlib from 3.11
+dependencies = []                    # stdlib only; needs ffmpeg/ffprobe on PATH
+
+[project.scripts]
+holvid = "holvid.cli:main"
+
+[tool.setuptools]
+packages = ["holvid"]
