@@ -1,6 +1,6 @@
 ---
 name: plan-vacation-video
-description: Turn a folder of raw family-vacation clips into a titled, review-ready Final Cut Pro timeline using the hol_vids tool. Probes and contact-sheets the footage, then READS the sheets to fill review.json (location label + dead spans per clip) — because locations are editorial knowledge the picture can't supply and only the contact sheets reveal what each clip contains — then bakes any vertical clips upright and builds the FCPXML. Use when editing vacation/holiday/trip footage into a movie, or when the user mentions cutting a trip video.
+description: Turn a folder of raw family-vacation clips into a titled, review-ready Final Cut Pro timeline using the hol_vids tool. Probes and contact-sheets the footage, then READS the sheets to fill review.json (location label + dead spans per clip) — because locations are editorial knowledge the picture can't supply and only the contact sheets reveal what each clip contains — optionally transcribes the audio in any language (English/Korean/…) to detect and silence sensitive/controversial speech, then bakes any vertical clips upright and builds the FCPXML. Use when editing vacation/holiday/trip footage into a movie, when the user mentions cutting a trip video, or when they want to mute/remove sensitive audio from one.
 ---
 
 # Plan & produce a vacation-video edit
@@ -8,8 +8,9 @@ description: Turn a folder of raw family-vacation clips into a titled, review-re
 Turn a folder of raw trip clips into one chronological, titled FCPXML for Final
 Cut Pro with the `hol_vids` tool (`holvid/probe.py` / `timeline.py` / `cli.py`).
 Pipeline: probe → contact sheets → **read the sheets to fill `review.json`** →
-bake vertical clips upright → build. Locations and dead spans are editorial calls
-the audio/metadata can't make, so the contact-sheet read is the heart of this.
+*(optional)* sanitize sensitive audio → bake vertical clips upright → build.
+Locations and dead spans are editorial calls the audio/metadata can't make, so
+the contact-sheet read is the heart of this.
 
 ## Operating principle (probe, then ask)
 
@@ -79,14 +80,48 @@ one.
 4. Sanity-check the location sequence reads like a story across the days before
    building.
 
+## Phase 2.5 — (Optional) Sanitize sensitive audio
+
+Run this when the user wants private/controversial talk silenced (medical news,
+pregnancy, finances, a political argument, anything embarrassing). It is
+**audio-driven and language-agnostic** — the complement to the picture-driven
+review above. Skip it entirely if they don't ask; it isn't part of the default
+flow.
+
+1. **Deps + model.** Needs `mlx-whisper` + `requests` (`uv pip install
+   mlx-whisper requests`) and a local Ollama server with the classifier model
+   (`ollama pull qwen3.6:35b-a3b-coding-mxfp8`, or whatever `[sanitize].ollama_model`
+   names). Confirm both before the slow transcription step — don't burn minutes
+   transcribing to fail at classification.
+2. **Run** `uv run holvid "<folder>" sanitize`. It transcribes every clip
+   (`_edit/transcripts.json`, **language auto-detected per clip** — English and
+   Korean are the tested baseline, ~100 others work; force one with
+   `[sanitize].language` only if auto-detect mis-fires on a clip), classifies
+   each line against `[sanitize].categories`, and writes padded+merged `mute`
+   spans into `review.json`.
+3. **Tune what counts as sensitive** in `[sanitize].categories` (it's fed to the
+   LLM verbatim, so it works in any language). The classifier is told to
+   **default to OK when unsure** — bias is to under-mute, because you still
+   review. Read the printed per-clip span counts and skim the `mute` arrays.
+4. **Muting keeps the picture.** Each `mute` span becomes a `<mute>` inside
+   `<audio-channel-source>` on that segment — audio silenced for those seconds,
+   not a frame removed. Spans landing inside `dead` (cut) footage just vanish.
+   Because nothing moves, you can re-run `sanitize`/`build` freely and hand-edit
+   `mute` arrays to override any call.
+5. **Both flows compose.** `dead` removes footage; `mute` silences audio over
+   kept footage. A clip can have both. The audio is the camera's own track
+   (there are no separate lavs as in `pt_vids`), so one `<mute>` per span covers
+   it — no mic-gating to worry about.
+
 ## Phase 3 — Upright, build, validate
 
 1. `uv run holvid "<folder>" upright` — bakes `<stem>_upright.MP4` for vertical
    clips (auto-detected). Skip if none. Required before build, or build aborts
    with a clear message.
 2. `uv run holvid "<folder>" build` → `_edit/<event>.fcpxml`. Read the printed
-   stats (segments, dissolves, clips cut + seconds removed, review markers) and
-   the `DTD valid` line. If `INVALID`, report the xmllint message — don't ship it.
+   stats (segments, dissolves, clips cut + seconds removed, review markers, muted
+   spans + seconds of sensitive audio) and the `DTD valid` line. If `INVALID`,
+   report the xmllint message — don't ship it.
 3. Tell the user to import via **File ▸ Import ▸ XML** (new project, nothing
    destructive) and to check the `REVIEW:` markers in **Timeline Index ▸ Tags**.
 
@@ -112,3 +147,9 @@ changes — survives shoots past midnight), **location lower-third** (when the
 - **Conservative cuts**: when unsure whether a span is junk, leave it as a
   marker, not a cut — it's easier to delete one extra shot in FCP than to notice
   a missing moment.
+- **Sensitive-audio muting** uses the DTD `<mute>` element (source-media-time
+  coordinate, same as the asset-clip `start`), not a clip split — picture stays
+  intact. On the **first** run, confirm in FCP that a muted span is genuinely
+  silent on the timeline; the spans are also listed in `review.json` for a manual
+  pass if ever needed. Whisper can hallucinate text over music/noise — harmless,
+  since hallucinated lines are almost never classified sensitive.

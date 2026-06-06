@@ -34,7 +34,10 @@ review.json schema:
      "<clip filename>": {
         "location": "Eiffel Tower",        # label; a title appears when it changes
         "summary": "...",                   # free text (notes only; unused in XML)
-        "dead": [[start_s, end_s, "reason"], ...]   # clip-local seconds
+        "dead": [[start_s, end_s, "reason"], ...],  # clip-local seconds (footage removed)
+        "mute": [[start_s, end_s, "reason"], ...]   # clip-local seconds: keep the
+                                                    # picture, silence the audio
+                                                    # (sensitive speech; see sanitize.py)
      }, ...
   },
   "title": "optional movie-title override"
@@ -323,7 +326,8 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         ts_counter[0] += 1
         return f"ts{ts_counter[0]}"
 
-    stats = {"cuts": 0, "cut_s": 0.0, "markers": 0, "segments": 0, "transitions": 0}
+    stats = {"cuts": 0, "cut_s": 0.0, "markers": 0, "segments": 0,
+             "transitions": 0, "mutes": 0, "mute_s": 0.0}
 
     # ---- pass 1: flatten clips into kept segments (obvious dead removed) ----
     segs = []
@@ -331,6 +335,11 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         msf = c["media_start_f"]
         rc = rclips.get(c["name"], {})
         kept, marks = _kept_and_markers(c["duration"], rc.get("dead", []), cfg)
+        # sensitive-speech spans to silence (clip-local seconds, from `sanitize`).
+        # We keep the picture and mute the audio over each span, so they survive
+        # into kept segments rather than removing footage.
+        mute_spans = [(max(0.0, float(m[0])), min(c["duration"], float(m[1])))
+                      for m in rc.get("mute", []) if float(m[1]) > float(m[0])]
         cut_total = c["duration"] - sum(b - a for a, b in kept)
         if cut_total > 0.05:
             stats["cuts"] += 1
@@ -341,6 +350,13 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         for si, (s0, s1) in enumerate(kept):
             in_f = msf + min(T.secs(s0), fr)
             out_f = msf + min(T.secs(s1), fr)
+            # clip each mute span to this kept range (spans inside removed footage
+            # vanish automatically); store as clip-local seconds.
+            seg_mutes = []
+            for m0, m1 in mute_spans:
+                a, b = max(s0, m0), min(s1, m1)
+                if b - a > 0.02:
+                    seg_mutes.append((a, b))
             segs.append({
                 "ref": c["ref"], "name": Path(c["name"]).stem, "cname": c["name"],
                 "in_f": in_f, "out_f": out_f, "msf": msf, "mend": msf + fr,
@@ -348,6 +364,7 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                 "daykey": c["daykey"], "ldt": local_dt(c),
                 "loc": (rc.get("location") or "").strip(), "clip_first": si == 0,
                 "marks": [(a, b, r) for (a, b, r) in marks if s0 <= a < s1],
+                "mutes": seg_mutes,
             })
 
     # ---- pass 2: decide dissolves + handle trims ----
@@ -429,6 +446,19 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                           duration=T.frames(max(1, T.secs(ms1) - T.secs(ms0))),
                           value=f"REVIEW: {reason}"[:80])
             stats["markers"] += 1
+
+        # ---- SENSITIVE-AUDIO MUTING (no split; picture is untouched) ----
+        # DTD content model puts audio-channel-source after anchor items/markers.
+        # `mute` start/duration are in source media time, the same coordinate as
+        # this asset-clip's `start`, so a clip-local second m -> msf + secs(m).
+        if s["mutes"]:
+            acs = ET.SubElement(clip, "audio-channel-source", srcCh="1, 2")
+            for m0, m1 in s["mutes"]:
+                ET.SubElement(acs, "mute",
+                              start=T.frames(s["msf"] + T.secs(m0)),
+                              duration=T.frames(max(1, T.secs(m1) - T.secs(m0))))
+                stats["mutes"] += 1
+                stats["mute_s"] += m1 - m0
 
         cursor += vdur
 

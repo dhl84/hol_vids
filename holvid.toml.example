@@ -73,6 +73,28 @@ cut_words  = ["ground", "feet", "floor", "blur", "black", "wall", "face",
               "backpack", "ceiling", "underexposed", "lens", "blank", "pavement"]
 keep_words = ["dark interior"]   # win over cut_words: keep as a marker
 
+# --- sensitive-audio sanitizing (optional `sanitize` step) ----------------
+# Transcribe each clip's audio (any language, auto-detected) and silence lines a
+# local LLM judges sensitive/controversial. Writes `mute` spans into review.json;
+# the build keeps the picture and mutes just those seconds.
+# Needs extra deps: `uv pip install mlx-whisper requests` + a local Ollama server.
+[sanitize]
+enabled       = false   # set true (or just run `holvid <proj> sanitize`)
+language      = ""      # "" = auto-detect per clip; or force "en", "ko", "fr", …
+whisper_model = "mlx-community/whisper-large-v3-turbo"
+ollama_model  = "qwen3.6:35b-a3b-coding-mxfp8"
+ollama_url    = "http://localhost:11434/api/generate"
+batch_lines   = 12      # transcript lines per LLM classification call
+min_mute_s    = 0.4     # ignore detected spans shorter than this
+pad_s         = 0.25    # widen each muted span by this on both sides
+# What counts as sensitive (fed to the LLM, language-agnostic). Tune per trip:
+categories = [
+  "private personal information (health, medical, pregnancy, finances, relationships, home address, a private individual's full name)",
+  "politics, religion, or other controversial/divisive opinions",
+  "offensive, discriminatory, hateful, or sexual content",
+  "anything embarrassing or that a person would not want shared publicly",
+]
+
 # --- contact-sheet sampling -----------------------------------------------
 [sheets]
 interval_s = 6     # seconds between sampled frames

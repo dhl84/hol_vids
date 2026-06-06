@@ -74,6 +74,35 @@ class Cuts:
 
 
 @dataclass
+class Sanitize:
+    """Find and silence sensitive/controversial speech (any language).
+
+    Pipeline: transcribe each clip's audio (mlx-whisper auto-detects the
+    language — English, Korean, and ~100 others) -> classify each line with a
+    local multilingual LLM (Ollama) -> write `mute` spans into review.json. The
+    build keeps the picture but silences those spans (DTD `<mute>` element).
+
+    Needs extra deps only for the `sanitize` step: mlx-whisper + requests.
+    """
+    enabled: bool = False
+    whisper_model: str = "mlx-community/whisper-large-v3-turbo"
+    language: str = ""               # "" = auto-detect; or "en", "ko", …
+    ollama_model: str = "qwen3.6:35b-a3b-coding-mxfp8"
+    ollama_url: str = "http://localhost:11434/api/generate"
+    batch_lines: int = 12            # transcript lines per classification call
+    min_mute_s: float = 0.4          # ignore detected spans shorter than this
+    pad_s: float = 0.25              # widen each muted span by this on both sides
+    # What counts as sensitive — fed to the LLM, language-agnostic. Tune per trip.
+    categories: list[str] = field(default_factory=lambda: [
+        "private personal information (health, medical, pregnancy, finances, "
+        "relationships, home address, a private individual's full name)",
+        "politics, religion, or other controversial/divisive opinions",
+        "offensive, discriminatory, hateful, or sexual content",
+        "anything embarrassing or that a person would not want shared publicly",
+    ])
+
+
+@dataclass
 class Timezone:
     """The camera clock rarely matches local time. Apply a single offset to get
     local wall-clock time for the titles, with an exception list for clips shot
@@ -120,6 +149,7 @@ class Config:
     transitions: Transitions = field(default_factory=Transitions)
     cuts: Cuts = field(default_factory=Cuts)
     sheets: Sheets = field(default_factory=Sheets)
+    sanitize: Sanitize = field(default_factory=Sanitize)
 
     # --- derived paths ---
     @property
@@ -174,7 +204,8 @@ def _from_dict(klass, data: dict):
     # nested sections are typed by annotation name; handle them explicitly so we
     # don't depend on `from __future__ import annotations` turning types to str.
     nested = {"discovery": Discovery, "timezone": Timezone, "titles": Titles,
-              "transitions": Transitions, "cuts": Cuts, "sheets": Sheets}
+              "transitions": Transitions, "cuts": Cuts, "sheets": Sheets,
+              "sanitize": Sanitize}
     for name, sub in nested.items():
         if name in data and isinstance(data[name], dict):
             kwargs[name] = _from_dict(sub, data[name])
