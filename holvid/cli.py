@@ -10,9 +10,14 @@ optional holvid.toml. Commands:
               (implies probe)
     review    scaffold an empty review.json from the manifest (won't overwrite)
     sanitize  transcribe audio (any language) + flag sensitive/controversial
-              speech with a local LLM -> writes `mute` spans into review.json.
-              The build keeps the picture and silences those spans. Needs
-              mlx-whisper + requests; enable in holvid.toml ([sanitize] enabled).
+              speech AND arguments with a local LLM -> writes `mute` spans into
+              review.json. The build keeps the picture and silences those spans.
+              Needs mlx-whisper (Ollama call is stdlib); see holvid.toml [sanitize].
+    glitch    detect brief camera mishaps (covered lens / dark / frozen) with
+              ffmpeg -> writes short `dead` cuts; the build transitions over them.
+    pace      speed up boring transit (walking/driving/eating) using a local
+              vision model -> writes `speed` spans; the build plays them faster
+              and muted. Needs ffmpeg + a multimodal Ollama model. See [pace].
     upright   bake pillarboxed copies of rotated clips (run before build)
     build     assemble the titled FCPXML    -> _edit/<event>.fcpxml
     all       probe + sheets + scaffold review (the prep before you fill it in)
@@ -31,7 +36,8 @@ from pathlib import Path
 from . import probe, timeline
 from .config import Config
 
-COMMANDS = ("probe", "sheets", "review", "sanitize", "upright", "build", "all")
+COMMANDS = ("probe", "sheets", "review", "sanitize", "glitch", "pace",
+            "upright", "build", "all")
 
 
 def _scaffold_review(cfg: Config, clips: list[dict]) -> None:
@@ -82,6 +88,15 @@ def main(argv: list[str] | None = None) -> int:
             print("[sanitize] [sanitize].enabled is false in holvid.toml — "
                   "running anyway since you asked for it explicitly")
         sanitize.detect(cfg, _load_clips(cfg))
+    elif cmd == "glitch":
+        from . import glitch
+        glitch.detect(cfg, _load_clips(cfg))
+    elif cmd == "pace":
+        from . import pace
+        if not cfg.pace.enabled:
+            print("[pace] [pace].enabled is false in holvid.toml — "
+                  "running anyway since you asked for it explicitly")
+        pace.detect(cfg, _load_clips(cfg))
     elif cmd == "upright":
         timeline.bake_upright(cfg, _load_clips(cfg))
     elif cmd == "all":
@@ -101,7 +116,9 @@ def main(argv: list[str] | None = None) -> int:
               f"segments, {s.get('transitions')} dissolves, cut {s.get('cuts')} "
               f"clips (~{s.get('cut_s', 0):.0f}s removed), "
               f"{s.get('markers')} review markers, "
-              f"{s.get('mutes', 0)} muted spans (~{s.get('mute_s', 0):.0f}s sensitive audio)")
+              f"{s.get('mutes', 0)} muted spans (~{s.get('mute_s', 0):.0f}s), "
+              f"{s.get('speedups', 0)} speed-ups "
+              f"(~{s.get('speed_saved_s', 0):.0f}s shorter)")
         print(f"[fcpxml] DTD {'valid' if ok else 'INVALID: ' + msg}")
         return 0 if ok else 1
     return 0

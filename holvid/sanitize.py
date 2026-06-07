@@ -7,8 +7,9 @@ keeps the picture but silences those spans. Works in any language Whisper
 supports — English and Korean tested, plus ~100 others — because Whisper
 auto-detects per clip and the LLM judges the transcript text directly.
 
-Heavier deps (mlx-whisper + requests) are imported lazily, so the rest of the
-tool stays stdlib-only; you only need them to run `holvid <proj> sanitize`.
+mlx-whisper is imported lazily (and the Ollama call uses the stdlib), so the
+rest of the tool stays stdlib-only; you only need mlx-whisper to run
+`holvid <proj> sanitize`.
 
 All times here are clip-local seconds (0 = the clip's first frame), matching the
 `dead` ranges in review.json.
@@ -16,9 +17,28 @@ All times here are clip-local seconds (0 = the clip's first frame), matching the
 from __future__ import annotations
 
 import json
+import urllib.request
 from pathlib import Path
 
 from .config import Config
+
+
+def ollama_generate(url: str, model: str, prompt: str, system: str | None = None,
+                    images: list[str] | None = None, timeout: float = 600) -> str:
+    """POST to Ollama's /api/generate and return the `response` string. Uses the
+    stdlib only (no `requests`), so the tool needs no extra HTTP dep. `images`
+    are base64-encoded for multimodal models. JSON-formatted, temperature 0."""
+    payload: dict = {"model": model, "prompt": prompt, "stream": False,
+                     "format": "json", "options": {"temperature": 0}}
+    if system is not None:
+        payload["system"] = system
+    if images:
+        payload["images"] = images
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8")).get("response", "")
 
 SYSTEM_PROMPT = """\
 You review the transcript of a personal holiday video to flag speech the family \
@@ -68,14 +88,8 @@ def transcribe_clips(cfg: Config, clips: list[dict], force: bool = False) -> dic
 
 
 def _ollama(cfg: Config, prompt: str, system: str) -> str:
-    import requests
-
-    r = requests.post(cfg.sanitize.ollama_url, json={
-        "model": cfg.sanitize.ollama_model, "system": system, "prompt": prompt,
-        "stream": False, "format": "json", "options": {"temperature": 0},
-    }, timeout=600)
-    r.raise_for_status()
-    return r.json()["response"]
+    return ollama_generate(cfg.sanitize.ollama_url, cfg.sanitize.ollama_model,
+                           prompt, system=system, timeout=600)
 
 
 def _parse_array(text: str):
@@ -99,11 +113,13 @@ def _parse_array(text: str):
     return None
 
 
-def _classify_lines(cfg: Config, lines: list[dict]) -> list[bool]:
-    """Return a sensitive-flag per line. Defaults all to OK on any failure."""
+def _classify_lines(cfg: Config, lines: list[dict],
+                    categories: list[str]) -> list[str | None]:
+    """Return a short reason per line (the matched category) or None if OK.
+    Defaults all to OK on any failure."""
     sys_p = SYSTEM_PROMPT.format(
-        categories="\n".join(f"- {c}" for c in cfg.sanitize.categories))
-    flags = [False] * len(lines)
+        categories="\n".join(f"- {c}" for c in categories))
+    reasons: list[str | None] = [None] * len(lines)
     for i in range(0, len(lines), cfg.sanitize.batch_lines):
         batch = lines[i:i + cfg.sanitize.batch_lines]
         numbered = "\n".join(f"{i + j}: {ln['text']}" for j, ln in enumerate(batch))
@@ -123,14 +139,19 @@ def _classify_lines(cfg: Config, lines: list[dict]) -> list[bool]:
         for item in parsed:
             if isinstance(item, dict) and item.get("sensitive") is True:
                 idx = item.get("i")
-                if isinstance(idx, int) and 0 <= idx < len(flags):
-                    flags[idx] = True
-    return flags
+                if isinstance(idx, int) and 0 <= idx < len(reasons):
+                    cat = str(item.get("category") or "sensitive").strip()
+                    reasons[idx] = cat[:40] or "sensitive"
+    return reasons
 
 
 def detect(cfg: Config, clips: list[dict], force: bool = False) -> dict:
     """Transcribe + classify, then write `mute` spans into review.json (keeping
-    any existing dead/location fields). Returns {clip_name: [[s0,s1,reason], …]}."""
+    any existing dead/location fields). Silences both sensitive speech and (when
+    enabled) arguments. Returns {clip_name: [[s0,s1,reason], …]}."""
+    categories = list(cfg.sanitize.categories)
+    if cfg.sanitize.detect_arguments:
+        categories.append(cfg.sanitize.argument_category)
     transcripts = transcribe_clips(cfg, clips, force=force)
     pad, min_s = cfg.sanitize.pad_s, cfg.sanitize.min_mute_s
     mutes: dict[str, list] = {}
@@ -139,31 +160,32 @@ def detect(cfg: Config, clips: list[dict], force: bool = False) -> dict:
         tr = transcripts.get(c["name"])
         if not tr or not tr["lines"]:
             continue
-        flags = _classify_lines(cfg, tr["lines"])
+        reasons = _classify_lines(cfg, tr["lines"], categories)
         spans = []
-        for ln, flag in zip(tr["lines"], flags):
-            if not flag:
+        for ln, reason in zip(tr["lines"], reasons):
+            if not reason:
                 continue
             s0 = max(0.0, ln["start"] - pad)
             s1 = min(c["duration"], ln["end"] + pad)
             if s1 - s0 >= min_s:
-                spans.append((s0, s1))
+                spans.append((s0, s1, reason))
         spans.sort()
         merged = []
-        for a, b in spans:                       # merge touching/overlapping
+        for a, b, r in spans:                    # merge touching/overlapping
             if merged and a <= merged[-1][1] + 0.1:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b), merged[-1][2])
             else:
-                merged.append((a, b))
+                merged.append((a, b, r))
         if merged:
-            mutes[c["name"]] = [[round(a, 2), round(b, 2), "sensitive"]
-                                for a, b in merged]
-            total += sum(b - a for a, b in merged)
+            mutes[c["name"]] = [[round(a, 2), round(b, 2), r] for a, b, r in merged]
+            total += sum(b - a for a, b, _ in merged)
             print(f"[sanitize] {c['name']} ({tr['language']}): "
-                  f"{len(merged)} sensitive span(s)")
+                  f"{len(merged)} span(s) muted "
+                  f"[{', '.join(sorted({r for *_, r in merged}))}]")
     _merge_into_review(cfg, mutes)
-    print(f"[sanitize] muted {total:.0f}s of sensitive speech across "
-          f"{len(mutes)} clip(s) -> review.json")
+    print(f"[sanitize] muted {total:.0f}s across {len(mutes)} clip(s) "
+          f"(sensitive speech{' + arguments' if cfg.sanitize.detect_arguments else ''})"
+          f" -> review.json")
     return mutes
 
 

@@ -35,9 +35,13 @@ review.json schema:
         "location": "Eiffel Tower",        # label; a title appears when it changes
         "summary": "...",                   # free text (notes only; unused in XML)
         "dead": [[start_s, end_s, "reason"], ...],  # clip-local seconds (footage removed)
-        "mute": [[start_s, end_s, "reason"], ...]   # clip-local seconds: keep the
+        "mute": [[start_s, end_s, "reason"], ...],  # clip-local seconds: keep the
                                                     # picture, silence the audio
-                                                    # (sensitive speech; see sanitize.py)
+                                                    # (sensitive speech / arguments)
+        "speed": [[start_s, end_s, factor, "reason"], ...]  # clip-local seconds:
+                                                    # keep the picture, play it
+                                                    # `factor`x faster and muted
+                                                    # (boring transit; see pace.py)
      }, ...
   },
   "title": "optional movie-title override"
@@ -142,17 +146,24 @@ def _is_obvious_dead(reason: str, cfg: Config) -> bool:
 
 def _kept_and_markers(dur: float, dead: list, cfg: Config):
     """Split a clip into kept media ranges (obvious-dead removed) and the
-    ambiguous spans to leave as review markers. Returns (kept[(s0,s1)], marks)."""
+    ambiguous spans to leave as review markers. Returns (kept[(s0,s1)], marks).
+
+    A span whose reason names a cut-word is an explicit cut and is removed at any
+    length (camera glitches are deliberately brief). `min_dead_s` only filters
+    *ambiguous* spans — the ones that would otherwise become review markers — so
+    momentary wobble doesn't litter the timeline with markers."""
     obvious, marks = [], []
     for span in dead:
         s0, s1 = max(0.0, float(span[0])), min(dur, float(span[1]))
         reason = span[2] if len(span) > 2 else "boring"
-        if s1 - s0 < cfg.cuts.min_dead_s:
+        span_len = s1 - s0
+        if span_len <= 0.05:                       # empty / nonsense
             continue
         if _is_obvious_dead(reason, cfg):
-            obvious.append((s0, s1))
-        else:
-            marks.append((s0, s1, reason))
+            obvious.append((s0, s1))               # explicit cut: any length
+        elif span_len >= cfg.cuts.min_dead_s:
+            marks.append((s0, s1, reason))         # ambiguous + long enough: mark
+        # else: ambiguous + short -> ignore as noise
     obvious.sort()
     merged = []
     for a, b in obvious:
@@ -168,6 +179,33 @@ def _kept_and_markers(dur: float, dead: list, cfg: Config):
     if cur < dur:
         kept.append((cur, dur))
     return (kept or [(0.0, dur)]), marks
+
+
+def _apply_speed(kept, speed_spans):
+    """Subdivide kept (s0,s1) ranges at speed-span boundaries, tagging each
+    resulting sub-range with its playback factor. A sub-range that falls inside a
+    speed span gets that span's factor (>1 = faster); everything else is 1.0
+    (normal). Returns an ordered list of (s0, s1, factor). `speed_spans` is a list
+    of (s0, s1, factor) in the same clip-local seconds as `kept`."""
+    out = []
+    for a, b in kept:
+        cuts = {a, b}
+        for s0, s1, _f in speed_spans:
+            if s1 > a and s0 < b:                      # overlaps this kept range
+                cuts.add(max(a, s0))
+                cuts.add(min(b, s1))
+        pts = sorted(cuts)
+        for x, y in zip(pts, pts[1:]):
+            if y - x < 1e-6:
+                continue
+            mid = (x + y) / 2.0
+            factor = 1.0
+            for s0, s1, f in speed_spans:
+                if s0 <= mid < s1:
+                    factor = f
+                    break
+            out.append((x, y, factor))
+    return out
 
 
 # --- time helpers ---------------------------------------------------------
@@ -327,7 +365,8 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         return f"ts{ts_counter[0]}"
 
     stats = {"cuts": 0, "cut_s": 0.0, "markers": 0, "segments": 0,
-             "transitions": 0, "mutes": 0, "mute_s": 0.0}
+             "transitions": 0, "mutes": 0, "mute_s": 0.0,
+             "speedups": 0, "speed_src_s": 0.0, "speed_saved_s": 0.0}
 
     # ---- pass 1: flatten clips into kept segments (obvious dead removed) ----
     segs = []
@@ -340,6 +379,17 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         # into kept segments rather than removing footage.
         mute_spans = [(max(0.0, float(m[0])), min(c["duration"], float(m[1])))
                       for m in rc.get("mute", []) if float(m[1]) > float(m[0])]
+        # speed-up spans (boring transit/eating/driving, from `pace`): keep the
+        # picture but play it faster and muted. Each entry is
+        # [s0, s1, factor?, reason?]; a missing factor defaults to cfg.pace.factor.
+        speed_spans = []
+        for sp in rc.get("speed", []):
+            s0, s1 = max(0.0, float(sp[0])), min(c["duration"], float(sp[1]))
+            if s1 <= s0:
+                continue
+            factor = float(sp[2]) if len(sp) > 2 and sp[2] else cfg.pace.factor
+            if factor > 1.0:
+                speed_spans.append((s0, s1, factor))
         cut_total = c["duration"] - sum(b - a for a, b in kept)
         if cut_total > 0.05:
             stats["cuts"] += 1
@@ -347,22 +397,25 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         # clamp media in/out to the asset's real frame range: ffprobe's float
         # duration can round 1-2 frames past c["frames"], which FCP rejects.
         fr = c["frames"]
-        for si, (s0, s1) in enumerate(kept):
+        subsegs = _apply_speed(kept, speed_spans)
+        for sidx, (s0, s1, factor) in enumerate(subsegs):
             in_f = msf + min(T.secs(s0), fr)
             out_f = msf + min(T.secs(s1), fr)
-            # clip each mute span to this kept range (spans inside removed footage
-            # vanish automatically); store as clip-local seconds.
+            # clip each mute span to this sub-range (spans inside removed footage
+            # vanish automatically); store as clip-local seconds. Speed segments
+            # are muted wholesale, so they don't carry per-span mutes.
             seg_mutes = []
-            for m0, m1 in mute_spans:
-                a, b = max(s0, m0), min(s1, m1)
-                if b - a > 0.02:
-                    seg_mutes.append((a, b))
+            if factor == 1.0:
+                for m0, m1 in mute_spans:
+                    a, b = max(s0, m0), min(s1, m1)
+                    if b - a > 0.02:
+                        seg_mutes.append((a, b))
             segs.append({
                 "ref": c["ref"], "name": Path(c["name"]).stem, "cname": c["name"],
                 "in_f": in_f, "out_f": out_f, "msf": msf, "mend": msf + fr,
-                "tcfmt": c["tcfmt"], "rotated": c["rotated"],
+                "tcfmt": c["tcfmt"], "rotated": c["rotated"], "factor": factor,
                 "daykey": c["daykey"], "ldt": local_dt(c),
-                "loc": (rc.get("location") or "").strip(), "clip_first": si == 0,
+                "loc": (rc.get("location") or "").strip(), "clip_first": sidx == 0,
                 "marks": [(a, b, r) for (a, b, r) in marks if s0 <= a < s1],
                 "mutes": seg_mutes,
             })
@@ -370,7 +423,11 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
     # ---- pass 2: decide dissolves + handle trims ----
     D = T.secs(cfg.transitions.dissolve_s)         # dissolve length (frames)
     H = T.secs(cfg.transitions.dissolve_s / 2) + 3  # handle trimmed per dissolving edge
-    elig = [(s["out_f"] - s["in_f"]) >= 2 * D + 2 * H for s in segs]
+    # A sped-up (retimed) segment never lends or takes a dissolve handle — the
+    # handle math assumes 1:1 source/timeline frames, so boring sections hard-cut
+    # in and out of normal speed.
+    elig = [s["factor"] == 1.0 and (s["out_f"] - s["in_f"]) >= 2 * D + 2 * H
+            for s in segs]
     trans = [False] * len(segs)                    # trans[i] = dissolve between i and i+1
     if cfg.transitions.enabled:
         for i in range(len(segs) - 1):
@@ -390,8 +447,14 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
     for i, s in enumerate(segs):
         is_first = (i == 0)
         is_last = (i == len(segs) - 1)
-        vdur = max(1, s["vout"] - s["vin"])
-        vdur = min(vdur, s["mend"] - s["vin"])     # never exceed available media
+        factor = s["factor"]
+        vin = s["vin"]
+        # source frames this segment consumes (after any dissolve handles), then
+        # the timeline (output) frames it occupies. At 1x they're equal; a speed
+        # span of factor f compresses src/f frames of timeline.
+        src_dur = max(1, s["vout"] - vin)
+        src_dur = min(src_dur, s["mend"] - vin)     # never exceed available media
+        out_dur = src_dur if factor == 1.0 else max(1, round(src_dur / factor))
 
         if s["lh"]:                                 # dissolve straddling this cut
             tr = ET.SubElement(spine, "transition", name="Cross Dissolve",
@@ -406,9 +469,22 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
 
         clip = ET.SubElement(spine, "asset-clip", ref=s["ref"],
                              offset=T.frames(cursor), name=s["name"],
-                             duration=T.frames(vdur), start=T.frames(s["vin"]),
+                             duration=T.frames(out_dur), start=T.frames(vin),
                              tcFormat=s["tcfmt"], audioRole="dialogue")
         stats["segments"] += 1
+
+        # ---- SPEED RAMP (retime, first in DTD order: timing-params) ----
+        # `time` is the output/timeline axis (clip-start-relative), `value` the
+        # source axis (also clip-start-relative, 0 = this clip's `start`). Mapping
+        # out_dur of timeline onto src_dur of source = constant factor playback.
+        if factor != 1.0:
+            tm = ET.SubElement(clip, "timeMap")
+            ET.SubElement(tm, "timept", time="0s", value="0s", interp="linear")
+            ET.SubElement(tm, "timept", time=T.frames(out_dur),
+                          value=T.frames(src_dur), interp="linear")
+            stats["speedups"] += 1
+            stats["speed_src_s"] += src_dur * T.d / T.n
+            stats["speed_saved_s"] += (src_dur - out_dur) * T.d / T.n
 
         fade = None
         if is_first and cfg.transitions.start_fade_s > 0:
@@ -419,6 +495,12 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
             ab = ET.SubElement(clip, "adjust-blend", amount="1")
             p = ET.SubElement(ab, "param", name="amount", value="1")
             ET.SubElement(p, fade[0], type=fade[1], duration=T.frames(fade[2]))
+
+        # Speed sections are muted wholesale (sped audio is unusable). adjust-volume
+        # is intrinsic-params-audio, so it follows adjust-blend (video) in DTD order
+        # and is always honored on import (unlike srcEnable).
+        if factor != 1.0:
+            ET.SubElement(clip, "adjust-volume", amount="-96dB")
 
         # ---- TITLE SEQUENCE LOGIC (only on a clip's first kept segment) ----
         if s["clip_first"]:
@@ -460,7 +542,7 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                 stats["mutes"] += 1
                 stats["mute_s"] += m1 - m0
 
-        cursor += vdur
+        cursor += out_dur
 
     sequence.set("duration", T.frames(cursor))
     build.stats = stats  # type: ignore[attr-defined]

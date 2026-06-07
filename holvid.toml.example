@@ -75,24 +75,61 @@ keep_words = ["dark interior"]   # win over cut_words: keep as a marker
 
 # --- sensitive-audio sanitizing (optional `sanitize` step) ----------------
 # Transcribe each clip's audio (any language, auto-detected) and silence lines a
-# local LLM judges sensitive/controversial. Writes `mute` spans into review.json;
-# the build keeps the picture and mutes just those seconds.
-# Needs extra deps: `uv pip install mlx-whisper requests` + a local Ollama server.
+# local LLM judges sensitive/controversial OR an argument. Writes `mute` spans
+# into review.json; the build keeps the picture and mutes just those seconds.
+# Needs `uv pip install mlx-whisper` + a local Ollama server (the call is stdlib).
 [sanitize]
-enabled       = false   # set true (or just run `holvid <proj> sanitize`)
-language      = ""      # "" = auto-detect per clip; or force "en", "ko", "fr", …
-whisper_model = "mlx-community/whisper-large-v3-turbo"
-ollama_model  = "qwen3.6:35b-a3b-coding-mxfp8"
-ollama_url    = "http://localhost:11434/api/generate"
-batch_lines   = 12      # transcript lines per LLM classification call
-min_mute_s    = 0.4     # ignore detected spans shorter than this
-pad_s         = 0.25    # widen each muted span by this on both sides
+enabled         = false   # set true (or just run `holvid <proj> sanitize`)
+language        = ""      # "" = auto-detect per clip; or force "en", "ko", "fr", …
+whisper_model   = "mlx-community/whisper-large-v3-turbo"
+ollama_model    = "qwen3.6:35b-a3b-coding-mxfp8"
+ollama_url      = "http://localhost:11434/api/generate"
+batch_lines     = 12      # transcript lines per LLM classification call
+min_mute_s      = 0.4     # ignore detected spans shorter than this
+pad_s           = 0.25    # widen each muted span by this on both sides
+detect_arguments = true   # also mute heated arguments/fights (any language)
 # What counts as sensitive (fed to the LLM, language-agnostic). Tune per trip:
 categories = [
   "private personal information (health, medical, pregnancy, finances, relationships, home address, a private individual's full name)",
   "politics, religion, or other controversial/divisive opinions",
   "offensive, discriminatory, hateful, or sexual content",
   "anything embarrassing or that a person would not want shared publicly",
+]
+
+# --- camera-glitch cutting (optional `glitch` step) -----------------------
+# ffmpeg finds brief black/frozen frames (covered or knocked lens, dropped cam)
+# and writes them as short `dead` cuts; the build transitions over each gap.
+# Only SHORT anomalies are cut — a long black/frozen hold is left as-is.
+[glitch]
+enabled       = false
+black_min_s   = 0.15    # min black interval to flag
+black_pic_th  = 0.97    # blackdetect picture blackness threshold (0..1)
+black_pix_th  = 0.10    # blackdetect per-pixel threshold
+freeze_min_s  = 0.6     # min frozen interval to flag
+freeze_noise_db = -55   # freezedetect noise floor (dB)
+max_glitch_s  = 5.0     # ignore anomalies longer than this (likely intentional)
+pad_s         = 0.1     # widen each cut by this on both sides
+
+# --- boring-section speed-up (optional `pace` step) -----------------------
+# A local multimodal Ollama model looks at sampled frames and flags skippable
+# transit (walking/driving/eating/queueing). Writes `speed` spans; the build
+# plays them `factor`x faster and muted (no footage removed). Needs only ffmpeg
+# + a vision model pulled into Ollama (e.g. `ollama pull gemma4`).
+[pace]
+enabled      = false
+vision_model = "gemma4:latest"   # any multimodal Ollama model
+ollama_url   = "http://localhost:11434/api/generate"
+sample_s     = 5.0      # seconds between sampled/classified frames
+frame_px     = 320      # downscale sampled frames to this width
+factor       = 2.0      # default speed-up for boring spans
+min_span_s   = 6.0      # only speed runs at least this long
+merge_gap_s  = 3.0      # bridge boring runs separated by less than this
+# What counts as boring/skippable (fed to the vision model). Tune per trip:
+categories = [
+  "walking or strolling from place to place with nothing notable happening",
+  "riding in or driving a car, bus, train or boat (transit/commute)",
+  "sitting and eating a meal with little visible activity",
+  "waiting or queuing",
 ]
 
 # --- contact-sheet sampling -----------------------------------------------

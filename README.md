@@ -21,14 +21,18 @@ continuous-recording seams, cut-word list, …) is now a field in a per-trip
 - `uv`, Python ≥ 3.11 (`tomllib` is stdlib) — `uv sync` / `uv pip install -e .`
 - `ffmpeg` + `ffprobe` on PATH
 - Final Cut Pro installed for DTD validation (skipped gracefully if absent)
-- No Python deps beyond the stdlib for the core pipeline. The **optional
-  `sanitize`** step (silence sensitive/controversial speech) additionally needs
-  `mlx-whisper` + `requests` and a local [Ollama](https://ollama.com) server.
+- No Python deps beyond the stdlib for the core pipeline. The optional analysis
+  steps need a local [Ollama](https://ollama.com) server and:
+  - **`sanitize`** (mute sensitive speech + arguments): `mlx-whisper` + a text
+    LLM. **`pace`** (speed up boring footage): a multimodal model (e.g. gemma4)
+    — no pip install. **`glitch`** (cut camera mishaps): nothing beyond ffmpeg.
 
 ## The pipeline
 
 ```
-probe ──> sheets ──> (you/Claude fill review.json) ──> [sanitize] ──> [upright] ──> build
+probe ──> sheets ──> (you/Claude fill review.json) ──┐
+                                                      ├─ [sanitize] [glitch] [pace] ──> [upright] ──> build
+              (optional auto-analysis, any order) ────┘
 ```
 
 1. **probe** — scan the footage, read each clip's wall-clock time, fps, duration
@@ -39,15 +43,16 @@ probe ──> sheets ──> (you/Claude fill review.json) ──> [sanitize] �
    needed).
 3. **review** — fill `_edit/review.json`: a `location` label and any `dead`
    spans per clip. `holvid … review` scaffolds an empty one.
-4. **sanitize** *(optional)* — transcribe each clip's audio (any language —
-   English, Korean, and ~100 others, auto-detected) and ask a local LLM which
-   lines are sensitive/controversial. Writes `mute` spans into `review.json`;
-   the build keeps the picture and **silences just those spans**. See
-   [Sanitizing sensitive audio](#sanitizing-sensitive-audio).
+4. **sanitize / glitch / pace** *(optional, any order)* — automatic analysis
+   that writes proposals into `review.json`. See
+   [Optional auto-analysis](#optional-auto-analysis):
+   - **sanitize** — mute sensitive speech **and arguments** (any language).
+   - **glitch** — cut brief camera mishaps (covered lens / dark / frozen).
+   - **pace** — speed up boring transit (walking/driving/eating), muted.
 5. **upright** — bake pillarboxed landscape copies of any vertical clips so FCP
    never has to rotate/conform. Auto-detected from rotation metadata.
 6. **build** — assemble `_edit/<event>.fcpxml`: titles, dissolves, auto-cuts,
-   review markers, sensitive-audio mutes. DTD-validated.
+   review markers, audio mutes, and speed-ramps. DTD-validated.
 
 ## Usage
 
@@ -64,48 +69,65 @@ uv run holvid "/Users/you/Downloads/Italy 2027" build
 Then in Final Cut Pro: **File ▸ Import ▸ XML**. It creates a new project and
 touches nothing else. Review markers show in **Timeline Index ▸ Tags**.
 
-Individual commands: `probe`, `sheets`, `review`, `sanitize`, `upright`,
-`build`, `all`.
+Individual commands: `probe`, `sheets`, `review`, `sanitize`, `glitch`, `pace`,
+`upright`, `build`, `all`.
 
-## Sanitizing sensitive audio
+## Optional auto-analysis
 
-Vacation clips catch unguarded talk — a relative's medical news, money, a
-political argument, anything embarrassing — that shouldn't end up in the family
-edit. The optional `sanitize` step finds and silences it, in **any language**:
+Three optional steps look at the footage and write proposals into `review.json`
+(`mute` / `dead` / `speed`). They're independent — run any subset, in any order —
+and all local. Re-run freely: muting and speed-ramps never move a frame, so you
+can tweak the JSON by hand and rebuild. Each is off by default; enable in
+`holvid.toml` or just run the command (it runs when invoked explicitly).
+
+### `sanitize` — mute sensitive speech **and arguments** (any language)
+
+Catches unguarded talk — a relative's medical news, money, anything embarrassing
+— **and arguments/fights** (e.g. a couple bickering), in any language:
 
 ```sh
-uv pip install mlx-whisper requests        # one-time, only for this step
+uv pip install mlx-whisper                 # one-time, only for this step
 ollama pull qwen3.6:35b-a3b-coding-mxfp8   # or set [sanitize].ollama_model
-
 uv run holvid "/Users/you/Downloads/Korea 2026" sanitize
-uv run holvid "/Users/you/Downloads/Korea 2026" build
 ```
 
-How it works:
+1. **Transcribe** every clip with `mlx-whisper`, **language auto-detected per
+   clip** (English and Korean tested; ~100 work). Cached in `transcripts.json`.
+2. **Classify** each line with a local LLM against `[sanitize].categories` plus —
+   when `detect_arguments` is on (default) — heated arguments/conflict. It judges
+   *meaning* regardless of language and **defaults to OK when unsure**.
+3. **Write `mute` spans** into `review.json`. The build emits a `<mute>` inside
+   `<audio-channel-source>` — **picture untouched, audio silenced** over those
+   seconds. Spans inside removed (`dead`) footage vanish.
 
-1. **Transcribe** every clip's audio with `mlx-whisper`. The language is
-   **auto-detected per clip** (English and Korean are the tested baseline; ~100
-   languages work), so a mixed-language trip needs no configuration. Cached in
-   `_edit/transcripts.json`.
-2. **Classify** each line with a local LLM against the `[sanitize].categories`
-   list (private personal info — health/pregnancy/finances/addresses —, politics
-   & religion, offensive/sexual content, anything embarrassing). It judges the
-   *meaning* regardless of language, and is told to **default to OK when unsure**
-   (a human still reviews).
-3. **Write `mute` spans** (clip-local seconds, padded + merged) into
-   `review.json`. The build emits a `<mute>` inside `<audio-channel-source>` for
-   each span — the **picture is untouched, only the audio is silenced** over
-   those seconds. Spans inside removed (`dead`) footage simply vanish.
+### `glitch` — cut brief camera mishaps (ffmpeg only)
 
-Tune what counts as sensitive in `[sanitize].categories`, or force a language
-with `[sanitize].language = "ko"`. Because muting never moves a frame, you can
-re-run `sanitize` and `build` freely; edit the `mute` arrays in `review.json` by
-hand to override any call.
+```sh
+uv run holvid "/Users/you/Downloads/Korea 2026" glitch
+```
 
-> First time: confirm in FCP that a muted span is actually silent on the
-> timeline. The `<mute>` element is the purpose-built, DTD-valid mechanism; if a
-> future FCP build ever ignores it, the spans are still listed in `review.json`
-> for a manual pass.
+Uses ffmpeg `blackdetect` + `freezedetect` to find the lens being covered /
+knocked to point at something dark (black frames) and a dropped camera that
+freezes — but only **short** anomalies (`[glitch].max_glitch_s`, so a deliberate
+night hold is left alone). Each becomes a short `dead` cut; the build removes it
+and the **dissolve logic transitions over the gap**.
+
+### `pace` — speed up boring transit (local vision model)
+
+```sh
+ollama pull gemma4                         # any multimodal model; set [pace].vision_model
+uv run holvid "/Users/you/Downloads/Korea 2026" pace
+```
+
+Samples a frame every few seconds and asks a **local multimodal model** whether
+it's skippable transit (`[pace].categories`: walking, driving/riding, eating,
+queueing). Boring runs ≥ `min_span_s` become `speed` spans. The build keeps the
+picture but plays them `factor`× faster and **muted**, via a DTD `<timeMap>`
+retime + volume to -96dB — no footage removed.
+
+> First time: confirm in FCP that mutes are silent and speed-ramps play at the
+> right rate. `<mute>` and `<timeMap>` are the purpose-built, DTD-valid
+> mechanisms; the spans are also listed in `review.json` for a manual pass.
 
 ## Configuration
 
@@ -125,6 +147,11 @@ rotation, generic title). Key sections:
   / short spans → left as review markers
 - `[discovery]` — file globs and the filename→datetime regex (default fits DJI
   action cams; falls back to container `creation_time`, then file mtime)
+- `[sanitize]` — sensitive-speech + argument muting (model, language,
+  categories, `detect_arguments`)
+- `[glitch]` — camera-mishap cutting (black/freeze thresholds, `max_glitch_s`)
+- `[pace]` — boring-transit speed-up (`vision_model`, `factor`, `min_span_s`,
+  categories)
 
 ## review.json schema
 
@@ -134,21 +161,23 @@ rotation, generic title). Key sections:
     "DJI_…_0007_D.MP4": {
       "location": "Gare du Nord",          // title fires when this changes
       "summary": "Family in the arrivals hall.",  // notes only; not in the XML
-      "dead": [[12.0, 14.8, "near-black"]], // clip-local seconds + reason (footage cut)
-      "mute": [[31.5, 35.0, "sensitive"]]  // clip-local seconds: keep picture,
-                                           // silence audio (from `sanitize`)
+      "dead":  [[12.0, 14.8, "near-black"]],       // cut footage (cut-word reason)
+      "mute":  [[31.5, 35.0, "argument"]],         // keep picture, silence audio
+      "speed": [[40.0, 70.0, 2.0, "boring transit"]] // keep picture, 2x + muted
     }
   },
   "title": "Optional movie-title override"
 }
 ```
 
-A `dead` span whose reason contains a **cut-word** (`black`, `blur`, `floor`, …)
-is cut from the timeline; anything else (e.g. `"dim church interior"`, or a
-`keep_word` match) is kept as a `REVIEW:` marker for you to judge in FCP. Spans
-shorter than `min_dead_s` are ignored as noise. A `mute` span keeps the picture
-and silences the audio over those clip-local seconds — written automatically by
-`sanitize`, but you can add or edit them by hand.
+All spans are clip-local seconds. A `dead` span whose reason contains a
+**cut-word** (`black`, `blur`, `floor`, …) is cut from the timeline at any
+length; an ambiguous reason (e.g. `"dim church interior"`, or a `keep_word`
+match) is kept as a `REVIEW:` marker, and ambiguous spans shorter than
+`min_dead_s` are ignored as noise. A `mute` span keeps the picture and silences
+the audio. A `speed` span keeps the picture and plays it `factor`× faster and
+muted. All three are written automatically by the analysis steps, but you can
+add or edit them by hand.
 
 ## How it builds the timeline
 
@@ -159,7 +188,12 @@ and silences the audio over those clip-local seconds — written automatically b
   all rendered in local time.
 - **Dissolves.** A 1 s cross-dissolve straddles each scene boundary where both
   neighbours are long enough to lend a handle; `continuous_seams` force a hard
-  join. Gentle fade up at the start, fade to black at the end.
+  join. Gentle fade up at the start, fade to black at the end. A removed glitch
+  mid-clip is bridged by a dissolve too.
+- **Speed-ramps.** A `speed` span becomes its own segment with a `<timeMap>`
+  retime (output time = source ÷ factor) and `adjust-volume=-96dB` (muted).
+  Retimed segments hard-cut in/out (the handle math is 1:1), so they don't take
+  dissolves.
 - **Timecode correctness.** DJI clips carry drop-frame embedded timecodes; each
   spine clip's `start`/`tcFormat` is set from them or FCP rejects the edit ("no
   respective media"). Media in/out is clamped to the asset's real frame range so
@@ -173,9 +207,13 @@ and silences the audio over those clip-local seconds — written automatically b
 - `holvid/config.py` — per-trip config + defaults (`Config.load`)
 - `holvid/probe.py` — clip discovery, ffprobe manifest, contact sheets
 - `holvid/sanitize.py` — optional: multilingual transcription + LLM detection of
-  sensitive speech → `mute` spans (lazy `mlx-whisper`/`requests` import)
-- `holvid/timeline.py` — FCPXML builder (titles, dissolves, cuts, audio mutes),
-  rotation bake, DTD validation
+  sensitive speech & arguments → `mute` spans (lazy `mlx-whisper`; stdlib Ollama
+  call shared via `ollama_generate`)
+- `holvid/glitch.py` — optional: ffmpeg black/freeze detection → `dead` cuts
+- `holvid/pace.py` — optional: local vision model classifies boring transit →
+  `speed` spans
+- `holvid/timeline.py` — FCPXML builder (titles, dissolves, cuts, audio mutes,
+  speed-ramps), rotation bake, DTD validation
 - `holvid/cli.py` — `holvid <project_dir> <command>`
 - `holvid.toml.example` — annotated config (real Paris values)
 - `TITLES.md` — the title-sequence logic, written up

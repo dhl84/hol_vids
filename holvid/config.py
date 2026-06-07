@@ -82,7 +82,8 @@ class Sanitize:
     local multilingual LLM (Ollama) -> write `mute` spans into review.json. The
     build keeps the picture but silences those spans (DTD `<mute>` element).
 
-    Needs extra deps only for the `sanitize` step: mlx-whisper + requests.
+    Needs one extra dep only for the `sanitize` step: mlx-whisper (the Ollama
+    call uses the stdlib).
     """
     enabled: bool = False
     whisper_model: str = "mlx-community/whisper-large-v3-turbo"
@@ -92,6 +93,12 @@ class Sanitize:
     batch_lines: int = 12            # transcript lines per classification call
     min_mute_s: float = 0.4          # ignore detected spans shorter than this
     pad_s: float = 0.25              # widen each muted span by this on both sides
+    # Also mute arguments/fights between people (any language). On by default —
+    # the LLM understands the conflict regardless of language (English, Korean…).
+    detect_arguments: bool = True
+    argument_category: str = (
+        "a heated argument, fight, raised-voice quarrel, or tense interpersonal "
+        "conflict between people (in any language, e.g. English or Korean)")
     # What counts as sensitive — fed to the LLM, language-agnostic. Tune per trip.
     categories: list[str] = field(default_factory=lambda: [
         "private personal information (health, medical, pregnancy, finances, "
@@ -99,6 +106,56 @@ class Sanitize:
         "politics, religion, or other controversial/divisive opinions",
         "offensive, discriminatory, hateful, or sexual content",
         "anything embarrassing or that a person would not want shared publicly",
+    ])
+
+
+@dataclass
+class Glitch:
+    """Detect brief camera mishaps and CUT them (the dissolve logic transitions
+    over the gap). Pure ffmpeg signal analysis — no model needed.
+
+    Catches: lens covered / pointed at something dark (black frames), and a
+    dropped/knocked camera that freezes (frozen frames). Only *short* anomalies
+    are treated as glitches; a long black/frozen stretch is probably intentional
+    (night shot, a deliberate hold) and is left alone.
+    """
+    enabled: bool = False
+    black_min_s: float = 0.15        # min black interval to flag (blackdetect d=)
+    black_pic_th: float = 0.97       # blackdetect picture blackness threshold
+    black_pix_th: float = 0.10       # blackdetect per-pixel black threshold
+    freeze_min_s: float = 0.6        # min frozen interval to flag
+    freeze_noise_db: int = -55       # freezedetect noise floor (dB)
+    max_glitch_s: float = 5.0        # ignore anomalies longer than this (likely intentional)
+    pad_s: float = 0.1               # widen each cut span by this on both sides
+    # reason written into review.json `dead`; must contain a `cut_words` token so
+    # the build removes it rather than leaving a review marker.
+    reason: str = "camera glitch (black/blank)"
+
+
+@dataclass
+class Pace:
+    """Speed up boring transit footage (walking, driving, eating, queueing) so it
+    shows the view without dragging — muted, at `factor`x. Uses a local
+    multimodal Ollama model (e.g. gemma4) to look at sampled frames and decide
+    what is skippable; writes `speed` spans into review.json.
+
+    Needs no extra Python deps — just ffmpeg (frame sampling) and a multimodal
+    model pulled into your local Ollama.
+    """
+    enabled: bool = False
+    vision_model: str = "gemma4:latest"   # a multimodal Ollama model
+    ollama_url: str = "http://localhost:11434/api/generate"
+    sample_s: float = 5.0            # seconds between sampled/classified frames
+    frame_px: int = 320              # downscale sampled frames to this width
+    factor: float = 2.0              # default speed-up for boring spans
+    min_span_s: float = 6.0          # only speed runs at least this long (else not worth it)
+    merge_gap_s: float = 3.0         # bridge boring runs separated by < this
+    # What counts as boring/skippable — fed to the vision model, tune per trip.
+    categories: list[str] = field(default_factory=lambda: [
+        "walking or strolling from place to place with nothing notable happening",
+        "riding in or driving a car, bus, train or boat (transit/commute)",
+        "sitting and eating a meal with little visible activity",
+        "waiting or queuing",
     ])
 
 
@@ -150,6 +207,8 @@ class Config:
     cuts: Cuts = field(default_factory=Cuts)
     sheets: Sheets = field(default_factory=Sheets)
     sanitize: Sanitize = field(default_factory=Sanitize)
+    glitch: Glitch = field(default_factory=Glitch)
+    pace: Pace = field(default_factory=Pace)
 
     # --- derived paths ---
     @property
@@ -205,7 +264,7 @@ def _from_dict(klass, data: dict):
     # don't depend on `from __future__ import annotations` turning types to str.
     nested = {"discovery": Discovery, "timezone": Timezone, "titles": Titles,
               "transitions": Transitions, "cuts": Cuts, "sheets": Sheets,
-              "sanitize": Sanitize}
+              "sanitize": Sanitize, "glitch": Glitch, "pace": Pace}
     for name, sub in nested.items():
         if name in data and isinstance(data[name], dict):
             kwargs[name] = _from_dict(sub, data[name])
