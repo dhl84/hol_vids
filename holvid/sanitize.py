@@ -24,12 +24,18 @@ from .config import Config
 
 
 def ollama_generate(url: str, model: str, prompt: str, system: str | None = None,
-                    images: list[str] | None = None, timeout: float = 600) -> str:
+                    images: list[str] | None = None, timeout: float = 600,
+                    num_predict: int | None = None) -> str:
     """POST to Ollama's /api/generate and return the `response` string. Uses the
     stdlib only (no `requests`), so the tool needs no extra HTTP dep. `images`
-    are base64-encoded for multimodal models. JSON-formatted, temperature 0."""
+    are base64-encoded for multimodal models. JSON-formatted, temperature 0.
+    Always pass a `num_predict` cap for short structured replies — without one,
+    a model stuck in a repetition loop generates until its context fills, which
+    holds the Ollama slot for many minutes and stalls every queued request."""
     payload: dict = {"model": model, "prompt": prompt, "stream": False,
                      "format": "json", "options": {"temperature": 0}}
+    if num_predict is not None:
+        payload["options"]["num_predict"] = num_predict
     if system is not None:
         payload["system"] = system
     if images:
@@ -52,8 +58,9 @@ Do NOT flag ordinary holiday talk, place names, reactions, or directions.
 When unsure, do NOT flag it (default OK) — it is worse to mute innocent talk \
 than to miss the rare sensitive line, which a human still reviews.
 
-Return ONLY a JSON array, one object per input line, in order:
-[{{"i": <int>, "sensitive": true|false, "category": "<short>"}}]"""
+Return ONLY a JSON object with a "results" array, one entry per input line, in
+order — never a bare single object, even for one line:
+{{"results": [{{"i": <int>, "sensitive": true|false, "category": "<short>"}}, …]}}"""
 
 
 def _transcripts_path(cfg: Config) -> Path:
@@ -88,8 +95,10 @@ def transcribe_clips(cfg: Config, clips: list[dict], force: bool = False) -> dic
 
 
 def _ollama(cfg: Config, prompt: str, system: str) -> str:
+    # a classification batch is a short reply: cap it hard so a bad batch fails
+    # in ~2 min (kept OK + logged) instead of holding the server for 20.
     return ollama_generate(cfg.sanitize.ollama_url, cfg.sanitize.ollama_model,
-                           prompt, system=system, timeout=600)
+                           prompt, system=system, timeout=120, num_predict=2048)
 
 
 def _parse_array(text: str):
@@ -123,11 +132,15 @@ def _classify_lines(cfg: Config, lines: list[dict],
     for i in range(0, len(lines), cfg.sanitize.batch_lines):
         batch = lines[i:i + cfg.sanitize.batch_lines]
         numbered = "\n".join(f"{i + j}: {ln['text']}" for j, ln in enumerate(batch))
+        # the explicit count matters: without it some models (e.g. gemma) judge
+        # only the first line and stop.
+        prompt = (f'Classify ALL {len(batch)} lines below. Your "results" array '
+                  f"must contain exactly {len(batch)} entries, i = {i} through "
+                  f"{i + len(batch) - 1}.\n\nLines:\n{numbered}")
         parsed = None
         for _ in range(2):                       # one retry on bad JSON
             try:
-                parsed = _parse_array(_ollama(
-                    cfg, f"Lines:\n{numbered}", sys_p))
+                parsed = _parse_array(_ollama(cfg, prompt, sys_p))
             except Exception as e:               # network / model error
                 print(f"  [warn] classify failed: {e}")
                 parsed = None
@@ -142,6 +155,10 @@ def _classify_lines(cfg: Config, lines: list[dict],
                 if isinstance(idx, int) and 0 <= idx < len(reasons):
                     cat = str(item.get("category") or "sensitive").strip()
                     reasons[idx] = cat[:40] or "sensitive"
+        done = min(i + len(batch), len(lines))
+        flagged = sum(1 for r in reasons if r)
+        print(f"  [sanitize] {done}/{len(lines)} lines classified, "
+              f"{flagged} flagged", flush=True)
     return reasons
 
 

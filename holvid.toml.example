@@ -46,9 +46,13 @@ camera_time_clips = ["DJI_20260528144150_0001_D.MP4",
 opening_s            = 5.0   # opening title duration over the first clip
 day_title_s          = 4.0   # day-divider title
 location_title_s     = 4.0   # location lower-third
+closing_s            = 4.0   # closing card over the end fade (0 disables)
+closing_text         = ""    # "" = auto: the trip's date range ("28 May – 4 June 2026")
+fade_s               = 0.5   # every title fades in/out over this (0 = pop on/off)
 opening_font_size    = 84
 day_font_size        = 96
 location_font_size   = 60
+closing_font_size    = 72
 location_y           = -360  # lower-third vertical position (0 = centre)
 font                 = "Helvetica Neue"
 date_format          = "%A %-d %B %Y"      # day divider -> "Thursday 28 May 2026"
@@ -57,12 +61,26 @@ location_stamp_format = "%-d %b · %H:%M"   # under location -> "28 May · 18:48
 # --- transitions ----------------------------------------------------------
 [transitions]
 enabled      = true
-dissolve_s   = 1.0   # scene/day-boundary cross-dissolve length
+dissolve_s   = 1.0   # scene-boundary cross-dissolve length
+day_dip_s    = 1.5   # day boundaries dip through black for this long in total
+                     # (the "time has passed" cue; 0 = plain dissolve instead)
 start_fade_s = 1.0   # fade up at the very start (0 disables)
 end_fade_s   = 2.0   # fade to black at the very end (0 disables)
 # clip pairs that are ONE continuous recording split across files -> hard join:
 continuous_seams = [["DJI_20260530130913_0012_D.MP4",
                      "DJI_20260530132741_0013_D.MP4"]]
+
+# --- background music (optional) -------------------------------------------
+# Lay the listed audio files in order under the whole edit on a connected lane,
+# at a low constant volume (the camera audio stays the foreground), fading in
+# at the start and out at the movie's end (or the music's own end if it runs
+# short). No looping — bring enough music, or let it end early; both read fine.
+[music]
+files      = []      # e.g. ["music/openings.m4a", "music/soft-piano.mp3"]
+                     # (paths relative to this file, or absolute)
+volume_db  = -18.0   # bed level under the camera audio
+fade_in_s  = 3.0
+fade_out_s = 4.0
 
 # --- automatic cuts vs review markers -------------------------------------
 [cuts]
@@ -82,6 +100,9 @@ keep_words = ["dark interior"]   # win over cut_words: keep as a marker
 enabled         = false   # set true (or just run `holvid <proj> sanitize`)
 language        = ""      # "" = auto-detect per clip; or force "en", "ko", "fr", …
 whisper_model   = "mlx-community/whisper-large-v3-turbo"
+# Pick a model that fits your RAM with plenty of headroom — one near the ceiling
+# makes Ollama evict/reload and crawl into timeouts. A ~10 GB multilingual model
+# (e.g. gemma4:latest) classifies well; 30 GB+ models are unusable on a 48 GB Mac.
 ollama_model    = "qwen3.6:35b-a3b-coding-mxfp8"
 ollama_url      = "http://localhost:11434/api/generate"
 batch_lines     = 12      # transcript lines per LLM classification call
@@ -131,6 +152,24 @@ categories = [
   "sitting and eating a meal with little visible activity",
   "waiting or queuing",
 ]
+
+# --- YouTube chapters (optional `chapters` step + build outputs) -----------
+# A local multimodal Ollama model looks at a few frames per clip and names the
+# event ("Eiffel Tower at Night"); consecutive clips at the same event share one
+# label. Writes a `chapter` field per clip into review.json. The BUILD then opens
+# a chapter wherever the label changes (falling back to `location`, then a day
+# divider — so chapters work even without this step), emits an FCP
+# <chapter-marker> at each one, and writes _edit/chapters.txt +
+# _edit/youtube_description.txt with `M:SS Title` lines to paste into the
+# YouTube description. `enabled` gates only the vision naming step.
+[chapters]
+enabled         = false
+vision_model    = "gemma4:latest"   # any multimodal Ollama model
+ollama_url      = "http://localhost:11434/api/generate"
+frames_per_clip = 3        # frames sampled per clip for the model
+frame_px        = 320      # downscale sampled frames to this width
+min_chapter_s   = 10.0     # YouTube's minimum; shorter chapters lose their slot
+day_format      = "%A %-d %B"  # chapter label for a day with no chapter/location
 
 # --- contact-sheet sampling -----------------------------------------------
 [sheets]

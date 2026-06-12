@@ -1,6 +1,6 @@
 ---
 name: plan-vacation-video
-description: Turn a folder of raw family-vacation clips into a titled, review-ready Final Cut Pro timeline using the hol_vids tool. Probes and contact-sheets the footage, then READS the sheets to fill review.json (location label + dead spans per clip) — because locations are editorial knowledge the picture can't supply and only the contact sheets reveal what each clip contains. Optional local auto-analysis can additionally: mute sensitive speech AND arguments in any language (English/Korean/…), cut brief camera glitches (covered/knocked lens, frozen frames), and speed up boring transit (walking/driving/eating). Then it bakes any vertical clips upright and builds the FCPXML. Use when editing vacation/holiday/trip footage into a movie, when the user mentions cutting a trip video, or when they want to mute/remove sensitive audio, cut camera mishaps, or speed up boring sections.
+description: Turn a folder of raw family-vacation clips into a titled, review-ready Final Cut Pro timeline using the hol_vids tool. Probes and contact-sheets the footage, then READS the sheets to fill review.json (location label + dead spans per clip) — because locations are editorial knowledge the picture can't supply and only the contact sheets reveal what each clip contains. Optional local auto-analysis can additionally: mute sensitive speech AND arguments in any language (English/Korean/…), cut brief camera glitches (covered/knocked lens, frozen frames), speed up boring transit (walking/driving/eating), and name YouTube chapters per event with a vision model. The build emits FCP chapter markers plus M:SS timestamps to paste into the YouTube description. Then it bakes any vertical clips upright and builds the FCPXML. Use when editing vacation/holiday/trip footage into a movie, when the user mentions cutting a trip video, when they want to mute/remove sensitive audio, cut camera mishaps, or speed up boring sections, or when they want YouTube chapters/timestamps for the upload.
 ---
 
 # Plan & produce a vacation-video edit
@@ -8,9 +8,11 @@ description: Turn a folder of raw family-vacation clips into a titled, review-re
 Turn a folder of raw trip clips into one chronological, titled FCPXML for Final
 Cut Pro with the `hol_vids` tool (`holvid/probe.py` / `timeline.py` / `cli.py`).
 Pipeline: probe → contact sheets → **read the sheets to fill `review.json`** →
-*(optional)* auto-analysis (sanitize / glitch / pace) → bake vertical clips
-upright → build. Locations and dead spans are editorial calls the audio/metadata
-can't make, so the contact-sheet read is the heart of this.
+*(optional)* auto-analysis (sanitize / glitch / pace / chapters) → bake vertical
+clips upright → build. Locations and dead spans are editorial calls the
+audio/metadata can't make, so the contact-sheet read is the heart of this. The
+build also writes a YouTube chapter index (`_edit/chapters.txt` +
+`youtube_description.txt`) from the chapter/location labels.
 
 ## Operating principle (probe, then ask)
 
@@ -82,17 +84,18 @@ one.
 
 ## Phase 2.5 — (Optional) Local auto-analysis
 
-Three independent steps that look at the footage and write proposals into
+Four independent steps that look at the footage and write proposals into
 `review.json`. Run only the ones the user asks for — none are part of the default
-flow. All local; all re-runnable (mutes and speed-ramps never move a frame, so
-you can hand-edit the JSON and rebuild). They write different fields, so they
-compose freely on the same clip:
+flow. All local; all re-runnable (mutes, speed-ramps and chapter labels never
+move a frame, so you can hand-edit the JSON and rebuild). They write different
+fields, so they compose freely on the same clip:
 
 | step | writes | effect at build | needs |
 |------|--------|-----------------|-------|
 | `sanitize` | `mute` | silence audio, keep picture | `mlx-whisper` + text LLM |
 | `glitch`   | `dead` | cut footage, dissolve over gap | ffmpeg only |
 | `pace`     | `speed`| play faster + muted, keep picture | ffmpeg + vision model |
+| `chapters` | `chapter` | FCP chapter markers + YouTube timestamps | ffmpeg + vision model |
 
 **`sanitize` — mute sensitive speech AND arguments (any language).** For private/
 controversial talk (medical, finances, embarrassing) **and arguments/fights**
@@ -127,6 +130,18 @@ unsure**. Skim the `speed` arrays; adjust `factor`/`min_span_s`/`categories` or
 hand-edit. Note: retimed segments hard-cut in/out (no dissolve), so a boring
 stretch snaps to/from normal speed.
 
+**`chapters` — name YouTube chapters (local vision model).** Run
+`uv run holvid "<folder>" chapters` with a multimodal model in Ollama
+(`[chapters].vision_model`). It samples `frames_per_clip` frames per clip and
+asks the model for a short viewer-facing event title ("Eiffel Tower at Night"),
+passing the previous clip's chapter so consecutive clips at one event share a
+label (a new day always starts fresh); writes a `chapter` field per clip. Skim
+the labels in `review.json` — they're plain strings, trivially hand-editable,
+and an empty `chapter` just continues the previous one. **The build derives
+chapters even without this step** (label preference `chapter` > `location` >
+day divider), so if the user only wants YouTube timestamps from their existing
+location labels, skip straight to build.
+
 ## Phase 3 — Upright, build, validate
 
 1. `uv run holvid "<folder>" upright` — bakes `<stem>_upright.MP4` for vertical
@@ -134,10 +149,18 @@ stretch snaps to/from normal speed.
    with a clear message.
 2. `uv run holvid "<folder>" build` → `_edit/<event>.fcpxml`. Read the printed
    stats (segments, dissolves, clips cut + seconds removed, review markers, muted
-   spans, speed-ups + seconds saved) and the `DTD valid` line. If `INVALID`,
-   report the xmllint message — don't ship it.
+   spans, speed-ups + seconds saved, chapters) and the `DTD valid` line. If
+   `INVALID`, report the xmllint message — don't ship it.
 3. Tell the user to import via **File ▸ Import ▸ XML** (new project, nothing
    destructive) and to check the `REVIEW:` markers in **Timeline Index ▸ Tags**.
+4. If chapter labels existed, build also wrote `_edit/chapters.txt` and
+   `_edit/youtube_description.txt` — tell the user to paste the latter into the
+   YouTube video description to get chapter navigation. YouTube's rules are
+   pre-applied (first chapter 0:00, each ≥ 10s); if the build warned about
+   fewer than 3 chapters, YouTube won't show the chapter bar — add more labels.
+   The timestamps are computed from the *output* timeline, so they remain
+   correct after cuts and speed-ups — but they go stale if the user re-edits
+   the timeline inside FCP before exporting (rebuild or hand-fix then).
 
 ## The title-sequence logic (so you can explain/tune it)
 

@@ -8,8 +8,15 @@ Produces a single chronological timeline (all clips, all days) with:
   * an opening movie title over the first clip
   * a day-divider title at each day's first clip (calendar-date change)
   * a location lower-third whenever the location label changes
+  * a closing card (the trip's date range) over the final fade-out
+  * every title fading gently in/out ([titles].fade_s)
   * obvious-junk dead spans removed; ambiguous ones left as REVIEW markers
-  * subtle cross-dissolves at scene/day boundaries + fade in/out
+  * subtle cross-dissolves at scene boundaries + fade in/out; day boundaries
+    dip through black instead ([transitions].day_dip_s) — "time has passed"
+  * an optional low background-music bed under the whole edit ([music].files)
+  * a <chapter-marker> at each chapter start (label change: `chapter` >
+    location > day), plus _edit/chapters.txt and _edit/youtube_description.txt
+    with `M:SS Title` lines for YouTube chapter navigation
 
 Times are snapped to the clips' frame grid (fps from the first clip). Validated
 against Apple's FCPXML DTD with xmllint when Final Cut Pro is installed.
@@ -33,6 +40,9 @@ review.json schema:
   "clips": {
      "<clip filename>": {
         "location": "Eiffel Tower",        # label; a title appears when it changes
+        "chapter": "Eiffel Tower at Night", # YouTube chapter label; a new chapter
+                                            # opens when it changes (falls back to
+                                            # location, then day; see chapters.py)
         "summary": "...",                   # free text (notes only; unused in XML)
         "dead": [[start_s, end_s, "reason"], ...],  # clip-local seconds (footage removed)
         "mute": [[start_s, end_s, "reason"], ...],  # clip-local seconds: keep the
@@ -271,7 +281,7 @@ def _title(parent, T, cfg, ref, lane, offset_f, dur_f, ts_id, text,
                       offset=T.frames(offset_f),
                       name=text.replace("\n", " ")[:40],
                       start="0s", duration=T.frames(dur_f))
-    # DTD order inside <title>: param* , text* , text-style-def* , ...
+    # DTD order inside <title>: param* , text* , text-style-def* , adjust-blend …
     if y_pos is not None:
         ET.SubElement(t, "param", name="Position",
                       key="9999/999166631/999166633/1/100/101",
@@ -284,14 +294,136 @@ def _title(parent, T, cfg, ref, lane, offset_f, dur_f, ts_id, text,
                   fontFace="Bold", fontColor="1 1 1 1",
                   shadowColor="0 0 0 0.75", shadowOffset="3 315",
                   alignment="center")
+    # gentle fade in/out rather than popping on/off (fade_s = 0 disables; each
+    # fade is capped at a third of the title so short titles still read).
+    fade_f = min(T.secs(cfg.titles.fade_s), dur_f // 3)
+    if fade_f > 0:
+        ab = ET.SubElement(t, "adjust-blend", amount="1")
+        p = ET.SubElement(ab, "param", name="amount", value="1")
+        ET.SubElement(p, "fadeIn", type="easeIn", duration=T.frames(fade_f))
+        ET.SubElement(p, "fadeOut", type="easeOut", duration=T.frames(fade_f))
     return t
+
+
+# --- chapters ---------------------------------------------------------------
+
+def _yt_time(sec: float) -> str:
+    h, rem = divmod(int(sec), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _finalize_chapters(points: list, total_s: float, min_s: float) -> list:
+    """Apply YouTube's chapter rules to raw (timeline_s, label) points: the first
+    chapter must start at 0:00 and every chapter must run at least `min_s`
+    seconds. A chapter cut short by the next label change loses its own label —
+    the longer-running new label takes over its slot (keeping the earlier
+    start). Consecutive duplicate labels collapse into one chapter."""
+    if not points:
+        return []
+    pts = [(0.0, points[0][1])] + points[1:]
+    out: list = []
+    for t, label in pts:
+        if out and label.lower() == out[-1][1].lower():
+            continue                            # same chapter continues
+        if out and t - out[-1][0] < min_s:
+            out[-1] = (out[-1][0], label)       # previous slot too short: new label takes it
+            if len(out) > 1 and out[-2][1].lower() == label.lower():
+                out.pop()                       # …and collapses into the one before
+        else:
+            out.append((t, label))
+    while len(out) > 1 and total_s - out[-1][0] < min_s:
+        out.pop()                               # a final stub extends the previous chapter
+    return out
+
+
+def _write_chapter_files(cfg: Config, chapters: list, movie_title: str) -> None:
+    """chapters.txt (bare `M:SS Title` lines) + youtube_description.txt (title,
+    blank line, the chapter list) — paste the latter into the YouTube video
+    description. YouTube needs >= 3 timestamps starting at 0:00 to show the
+    chapter bar."""
+    if not chapters:
+        print("[chapters] no chapter labels (chapter/location empty everywhere) "
+              "— chapter files not written")
+        return
+    block = "".join(f"{_yt_time(t)} {label}\n" for t, label in chapters)
+    cfg.chapters_txt.write_text(block, encoding="utf-8")
+    cfg.youtube_description.write_text(f"{movie_title}\n\n{block}",
+                                       encoding="utf-8")
+    note = ("" if len(chapters) >= 3 else
+            "  (note: YouTube shows the chapter bar only with >=3 chapters)")
+    print(f"[chapters] {len(chapters)} chapters -> {cfg.chapters_txt.name} + "
+          f"{cfg.youtube_description.name} (paste into the YouTube description)"
+          f"{note}")
+
+
+# --- music bed --------------------------------------------------------------
+
+def _probe_audio_s(path: Path) -> float:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True).stdout.strip()
+    try:
+        return float(out)
+    except ValueError:
+        return 0.0
+
+
+def _music_files(cfg: Config) -> list[tuple[Path, float]]:
+    """Resolve [music].files (relative to the project dir) -> [(path, seconds)].
+    Missing or unreadable files are skipped with a warning, not fatal."""
+    out = []
+    for f in cfg.music.files:
+        p = Path(f)
+        if not p.is_absolute():
+            p = cfg.project_dir / p
+        dur = _probe_audio_s(p) if p.exists() else 0.0
+        if dur <= 0:
+            print(f"[music] skipping {f}: "
+                  f"{'not found' if not p.exists() else 'unreadable/zero-length'}")
+            continue
+        out.append((p, dur))
+    return out
+
+
+# --- closing card -----------------------------------------------------------
+
+def _closing_text(cfg: Config, dts: list[datetime]) -> str:
+    """The trip's date range, with shared month/year elided from the first date:
+    "28 May – 4 June 2026" / "3 – 9 August 2026" / a single date for one day."""
+    if cfg.titles.closing_text:
+        return cfg.titles.closing_text
+    if not dts:
+        return ""
+    a, b = min(dts), max(dts)
+    full = cfg.titles.closing_range_format
+    if a.date() == b.date():
+        return b.strftime(full)
+    if a.year != b.year:
+        return f"{a.strftime(full)} – {b.strftime(full)}"
+    if a.month != b.month:
+        return f"{a.strftime('%-d %B')} – {b.strftime(full)}"
+    return f"{a.strftime('%-d')} – {b.strftime(full)}"
 
 
 # --- builder --------------------------------------------------------------
 
 def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
-    fps_num, fps_den = clips[0]["fps_num"], clips[0]["fps_den"]
+    # Sequence rate/raster = the dominant source format by total duration; other
+    # sources keep their native rate via their own <format> resource and FCP
+    # conforms them on the timeline (e.g. a 29.97 GoPro in a 59.94 DJI edit).
+    weights: dict[tuple, float] = {}
+    for c in clips:
+        key = (c["fps_num"], c["fps_den"], c["width"], c["height"])
+        weights[key] = weights.get(key, 0.0) + c["duration"]
+    fps_num, fps_den, width, height = max(weights, key=weights.__getitem__)
     T = _T(fps_num, fps_den)
+    if len(weights) > 1:
+        others = ", ".join(f"{n}/{d} {w}x{h} ({weights[(n, d, w, h)]:.0f}s)"
+                           for n, d, w, h in weights)
+        print(f"[fcpxml] mixed source formats — timeline {fps_num}/{fps_den} "
+              f"{width}x{height}; sources: {others}")
     rclips = review.get("clips", {})
     movie_title = review.get("title") or cfg.title
     rotated = _rotated_names(cfg, clips)
@@ -308,12 +440,18 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
 
     fcpxml = ET.Element("fcpxml", version=cfg.fcpxml_version)
     resources = ET.SubElement(fcpxml, "resources")
-    fmt_id = "r1"
-    ET.SubElement(resources, "format", id=fmt_id,
-                  name=f"FFVideoFormat{clips[0]['height']}p{fps_num // 1000}",
-                  frameDuration=T.frame_dur(),
-                  width=str(clips[0]["width"]), height=str(clips[0]["height"]),
-                  colorSpace="1-1-1 (Rec. 709)")
+    fmt_ids: dict[tuple, str] = {}
+    for n, d, w, h in [(fps_num, fps_den, width, height)] + sorted(weights):
+        if (n, d, w, h) in fmt_ids:
+            continue
+        fid = f"r{len(fmt_ids) + 1}"
+        fmt_ids[(n, d, w, h)] = fid
+        ET.SubElement(resources, "format", id=fid,
+                      name=f"FFVideoFormat{h}p{n // 1000}",
+                      frameDuration=f"{d}/{n}s",
+                      width=str(w), height=str(h),
+                      colorSpace="1-1-1 (Rec. 709)")
+    fmt_id = fmt_ids[(fps_num, fps_den, width, height)]   # the sequence format
     ET.SubElement(resources, "effect", id="rTitle", name="Basic Title",
                   uid=BASIC_TITLE_UID)
     ET.SubElement(resources, "effect", id="rDis", name="Cross Dissolve",
@@ -321,11 +459,24 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
     ET.SubElement(resources, "effect", id="rAud", name="Audio Crossfade",
                   uid="FFAudioTransition")
 
-    # one asset per clip
+    # one asset per clip. All segment/media maths below run in SEQUENCE frame
+    # units; each clip carries a `scale` (sequence frames per source frame —
+    # e.g. 2.0 for a 29.97 source in a 59.94 timeline) and cut points snap to
+    # the clip's own frame grid first, so media in/out always lands on a real
+    # source frame.
+    def clip_f(c: dict, sec: float) -> int:
+        """Clip-local seconds -> sequence frames, on the clip's frame grid."""
+        return round(round(sec * c["fps_num"] / c["fps_den"]) * c["scale"])
+
     for i, c in enumerate(clips, 1):
         c["ref"] = f"v{i}"
         c["daykey"] = c["datetime"][:10] if c["datetime"] else c["day"]
         c["rotated"] = c["name"] in rotated
+        c["scale"] = (fps_num * c["fps_den"]) / (c["fps_num"] * fps_den)
+        if abs(c["scale"] - round(c["scale"])) > 1e-9:
+            print(f"[fcpxml] note: {c['name']} ({c['fps_num']}/{c['fps_den']}) "
+                  f"is not an integer multiple of the timeline rate — its cuts "
+                  f"are rounded to the nearest timeline frame")
         if c["rotated"]:
             src_path = _upright_path(c)
             if not src_path.exists():
@@ -333,22 +484,38 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                     f"[fcpxml] {c['name']} is rotated but {src_path.name} is "
                     f"missing — run `holvid <project> upright` first.")
             c["frames"] = _probe_frames(src_path) or c["frames"]
-            c["duration"] = c["frames"] * fps_den / fps_num
+            c["duration"] = c["frames"] * c["fps_den"] / c["fps_num"]
             c["media_start_f"], c["tcfmt"] = 0, "NDF"
         else:
-            sf, drop = (parse_timecode(c["timecode"], fps_num, fps_den)
+            sf, drop = (parse_timecode(c["timecode"], c["fps_num"], c["fps_den"])
                         if c["timecode"] else (0, False))
-            c["media_start_f"], c["tcfmt"] = sf, ("DF" if drop else "NDF")
+            c["media_start_f"] = round(sf * c["scale"])
+            c["tcfmt"] = "DF" if drop else "NDF"
             src_path = Path(c["path"])
+        c["frames_sq"] = round(c["frames"] * c["scale"])
         asset = ET.SubElement(resources, "asset", id=c["ref"],
                               name=Path(c["name"]).stem,
                               start=T.frames(c["media_start_f"]),
-                              duration=T.frames(c["frames"]),
-                              hasVideo="1", hasAudio="1", format=fmt_id,
+                              duration=T.frames(c["frames_sq"]),
+                              hasVideo="1", hasAudio="1",
+                              format=fmt_ids[(c["fps_num"], c["fps_den"],
+                                              c["width"], c["height"])],
                               videoSources="1", audioSources="1",
                               audioChannels="2", audioRate="48000")
         ET.SubElement(asset, "media-rep", kind="original-media",
                       src=_file_url(src_path))
+
+    # background-music assets (audio-only, connected under the first spine clip)
+    music = []                       # [(ref, seconds)]
+    for mi, (mpath, mdur) in enumerate(_music_files(cfg), 1):
+        ref = f"m{mi}"
+        masset = ET.SubElement(resources, "asset", id=ref, name=mpath.stem,
+                               start="0s", duration=T.frames(T.secs(mdur)),
+                               hasAudio="1", audioSources="1",
+                               audioChannels="2", audioRate="48000")
+        ET.SubElement(masset, "media-rep", kind="original-media",
+                      src=_file_url(mpath))
+        music.append((ref, mdur))
 
     library = ET.SubElement(fcpxml, "library")
     event = ET.SubElement(library, "event", name=cfg.event_name)
@@ -365,8 +532,9 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         return f"ts{ts_counter[0]}"
 
     stats = {"cuts": 0, "cut_s": 0.0, "markers": 0, "segments": 0,
-             "transitions": 0, "mutes": 0, "mute_s": 0.0,
-             "speedups": 0, "speed_src_s": 0.0, "speed_saved_s": 0.0}
+             "transitions": 0, "day_dips": 0, "mutes": 0, "mute_s": 0.0,
+             "speedups": 0, "speed_src_s": 0.0, "speed_saved_s": 0.0,
+             "chapters": 0, "music_s": 0.0}
 
     # ---- pass 1: flatten clips into kept segments (obvious dead removed) ----
     segs = []
@@ -395,12 +563,12 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
             stats["cuts"] += 1
             stats["cut_s"] += cut_total
         # clamp media in/out to the asset's real frame range: ffprobe's float
-        # duration can round 1-2 frames past c["frames"], which FCP rejects.
-        fr = c["frames"]
+        # duration can round 1-2 frames past the frame count, which FCP rejects.
+        fr = c["frames_sq"]
         subsegs = _apply_speed(kept, speed_spans)
         for sidx, (s0, s1, factor) in enumerate(subsegs):
-            in_f = msf + min(T.secs(s0), fr)
-            out_f = msf + min(T.secs(s1), fr)
+            in_f = msf + min(clip_f(c, s0), fr)
+            out_f = msf + min(clip_f(c, s1), fr)
             # clip each mute span to this sub-range (spans inside removed footage
             # vanish automatically); store as clip-local seconds. Speed segments
             # are muted wholesale, so they don't carry per-span mutes.
@@ -415,7 +583,9 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                 "in_f": in_f, "out_f": out_f, "msf": msf, "mend": msf + fr,
                 "tcfmt": c["tcfmt"], "rotated": c["rotated"], "factor": factor,
                 "daykey": c["daykey"], "ldt": local_dt(c),
-                "loc": (rc.get("location") or "").strip(), "clip_first": sidx == 0,
+                "loc": (rc.get("location") or "").strip(),
+                "chapter": (rc.get("chapter") or "").strip(),
+                "clip_first": sidx == 0,
                 "marks": [(a, b, r) for (a, b, r) in marks if s0 <= a < s1],
                 "mutes": seg_mutes,
             })
@@ -435,6 +605,20 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                 continue                            # one continuous recording -> hard join
             if elig[i] and elig[i + 1]:
                 trans[i] = True
+    # Day boundaries dip through black instead of dissolving — the classic
+    # "time has passed" cue: fade the old day out, hard cut, fade the new day in.
+    for s in segs:
+        s["fade_in_f"] = s["fade_out_f"] = 0
+    if cfg.transitions.day_dip_s > 0:
+        dip_f = max(2, T.secs(cfg.transitions.day_dip_s / 2))
+        for i in range(len(segs) - 1):
+            a, b = segs[i], segs[i + 1]
+            if a["daykey"] == b["daykey"] or (a["cname"], b["cname"]) in seams:
+                continue
+            trans[i] = False
+            a["fade_out_f"] = dip_f
+            b["fade_in_f"] = dip_f
+            stats["day_dips"] += 1
     for i, s in enumerate(segs):
         s["lh"] = i > 0 and trans[i - 1]
         s["rh"] = i < len(segs) - 1 and trans[i]
@@ -442,8 +626,18 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         s["vout"] = s["out_f"] - (H if s["rh"] else 0)
 
     # ---- pass 3: emit spine ----
+    def _out_dur_f(s):
+        src = max(1, min(s["vout"] - s["vin"], s["mend"] - s["vin"]))
+        return src if s["factor"] == 1.0 else max(1, round(src / s["factor"]))
+
+    total_out_f = sum(_out_dur_f(s) for s in segs)   # movie length (output frames)
+    # closing card needs clear air after the opening (both sit on lane 3)
+    closing_text = (_closing_text(cfg, [s["ldt"] for s in segs if s["ldt"]])
+                    if cfg.titles.closing_s > 0 and total_out_f * T.d / T.n
+                    > cfg.titles.opening_s + cfg.titles.closing_s + 2 else "")
     cursor = 0
-    prev_day = prev_loc = None
+    prev_day = prev_loc = prev_chap = None
+    chapter_pts = []          # (timeline seconds, label) at each chapter start
     for i, s in enumerate(segs):
         is_first = (i == 0)
         is_last = (i == len(segs) - 1)
@@ -486,15 +680,21 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
             stats["speed_src_s"] += src_dur * T.d / T.n
             stats["speed_saved_s"] += (src_dur - out_dur) * T.d / T.n
 
-        fade = None
+        # picture fades: movie start/end + day-boundary dips (a segment can carry
+        # both, e.g. a single-clip day that dips in and out).
+        fin, fout = s["fade_in_f"], s["fade_out_f"]
         if is_first and cfg.transitions.start_fade_s > 0:
-            fade = ("fadeIn", "easeIn", T.secs(cfg.transitions.start_fade_s))
+            fin = max(fin, T.secs(cfg.transitions.start_fade_s))
         if is_last and cfg.transitions.end_fade_s > 0:
-            fade = ("fadeOut", "easeOut", T.secs(cfg.transitions.end_fade_s))
-        if fade:
+            fout = max(fout, T.secs(cfg.transitions.end_fade_s))
+        fin, fout = min(fin, out_dur // 2), min(fout, out_dur // 2)
+        if fin or fout:
             ab = ET.SubElement(clip, "adjust-blend", amount="1")
             p = ET.SubElement(ab, "param", name="amount", value="1")
-            ET.SubElement(p, fade[0], type=fade[1], duration=T.frames(fade[2]))
+            if fin:
+                ET.SubElement(p, "fadeIn", type="easeIn", duration=T.frames(fin))
+            if fout:
+                ET.SubElement(p, "fadeOut", type="easeOut", duration=T.frames(fout))
 
         # Speed sections are muted wholesale (sped audio is unusable). adjust-volume
         # is intrinsic-params-audio, so it follows adjust-blend (video) in DTD order
@@ -506,10 +706,11 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         if s["clip_first"]:
             tt = cfg.titles
             ldt = s["ldt"]
+            new_day = s["daykey"] != prev_day
             if is_first:                            # opening movie title, lane 3
                 _title(clip, T, cfg, "rTitle", 3, s["vin"], T.secs(tt.opening_s),
                        next_ts(), movie_title, tt.opening_font_size, None)
-            if s["daykey"] != prev_day and ldt is not None:   # day divider, lane 2
+            if new_day and ldt is not None:         # day divider, lane 2
                 day_off = s["vin"] + (T.secs(tt.opening_s) if is_first else 0)
                 _title(clip, T, cfg, "rTitle", 2, day_off, T.secs(tt.day_title_s),
                        next_ts(), ldt.strftime(tt.date_format),
@@ -522,6 +723,65 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                 _title(clip, T, cfg, "rTitle", 1, s["vin"], T.secs(tt.location_title_s),
                        next_ts(), text, tt.location_font_size, tt.location_y)
                 prev_loc = s["loc"]
+
+            # ---- MUSIC BED (connected to the first clip, lane -1) ----
+            # The files tile the timeline in order at a low constant volume; the
+            # bed fades in at the start and out at the movie's end (or its own).
+            # Connected-clip offsets are in the host's media time, so timeline
+            # frame F sits at vin + F (the first clip's spine offset is 0).
+            if is_first and music:
+                if factor != 1.0:
+                    print("[music] note: the first segment is retimed — music "
+                          "timing may drift; consider not speeding up clip 1")
+                pos = 0                              # timeline frames so far
+                for mj, (mref, mdur) in enumerate(music):
+                    if pos >= total_out_f:
+                        break
+                    mdur_f = min(T.secs(mdur), total_out_f - pos)
+                    mclip = ET.SubElement(
+                        clip, "asset-clip", ref=mref, lane="-1",
+                        offset=T.frames(vin + pos), name=f"music {mj + 1}",
+                        duration=T.frames(mdur_f), start="0s",
+                        srcEnable="audio", audioRole="music")
+                    av = ET.SubElement(mclip, "adjust-volume",
+                                       amount=f"{cfg.music.volume_db:g}dB")
+                    pa = ET.SubElement(av, "param", name="amount")
+                    last = mj == len(music) - 1 or pos + mdur_f >= total_out_f
+                    if mj == 0 and cfg.music.fade_in_s > 0:
+                        ET.SubElement(pa, "fadeIn", type="easeIn",
+                                      duration=T.frames(min(T.secs(cfg.music.fade_in_s),
+                                                            mdur_f // 2)))
+                    if last and cfg.music.fade_out_s > 0:
+                        ET.SubElement(pa, "fadeOut", type="easeOut",
+                                      duration=T.frames(min(T.secs(cfg.music.fade_out_s),
+                                                            mdur_f // 2)))
+                    pos += mdur_f
+                    stats["music_s"] += mdur_f * T.d / T.n
+
+        # ---- CLOSING CARD (lane 3, ending with the final fade-out) ----
+        # An anchor item, so it must precede this clip's chapter-marker/markers.
+        if is_last and closing_text:
+            cdur_f = min(T.secs(cfg.titles.closing_s), out_dur)
+            _title(clip, T, cfg, "rTitle", 3, vin + max(0, out_dur - cdur_f),
+                   cdur_f, next_ts(), closing_text,
+                   cfg.titles.closing_font_size, None)
+
+        if s["clip_first"]:
+            # ---- CHAPTERS (FCP <chapter-marker> + the YouTube timestamps) ----
+            # Label preference: explicit `chapter` (from the chapters step or by
+            # hand) > location > a day divider. A chapter opens when the label
+            # changes; the marker's `start` is source media time (like markers),
+            # while the YouTube timestamp is the output-timeline cursor.
+            # (`ldt`/`new_day` carry over from the title block above — same
+            # iteration, and `new_day` predates the prev_day update.)
+            chap = s["chapter"] or s["loc"]
+            if not chap and new_day and ldt is not None:
+                chap = ldt.strftime(cfg.chapters.day_format)
+            if chap and chap.lower() != (prev_chap or "").lower():
+                ET.SubElement(clip, "chapter-marker",
+                              start=T.frames(vin), value=chap[:80])
+                chapter_pts.append((cursor * T.d / T.n, chap))
+                prev_chap = chap
 
         for ms0, ms1, reason in s["marks"]:
             ET.SubElement(clip, "marker", start=T.frames(s["msf"] + T.secs(ms0)),
@@ -545,6 +805,11 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         cursor += out_dur
 
     sequence.set("duration", T.frames(cursor))
+
+    chapters = _finalize_chapters(chapter_pts, cursor * T.d / T.n,
+                                  cfg.chapters.min_chapter_s)
+    stats["chapters"] = len(chapters)
+    _write_chapter_files(cfg, chapters, movie_title)
     build.stats = stats  # type: ignore[attr-defined]
 
     _indent(fcpxml)

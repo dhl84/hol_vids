@@ -14,6 +14,18 @@ so a title never re-fires mid-clip.
 | 3 | **Opening** | first clip of the whole edit only | `cfg.title` (or `review.json["title"]`) | centre | 84 |
 | 2 | **Day divider** | the clip's **calendar date** differs from the previous title's | `local_dt.strftime(date_format)` → "Thursday 28 May 2026" | centre | 96 |
 | 1 | **Location** | the clip's **location label** differs from the previous one | `"<place>\n<stamp>"` → "Gare du Nord\n28 May · 18:48" | lower third (`location_y = -360`) | 60 |
+| 3 | **Closing** | last segment of the edit (emitted on any segment, not just a clip's first) | `closing_text`, or auto: the trip's date range → "28 May – 4 June 2026" | centre | 72 |
+
+Every title **fades in and out** over `[titles].fade_s` (default 0.5 s, capped
+at a third of the title's duration) rather than popping on/off — an
+`adjust-blend` fade on the title itself, no extra effects. Set `fade_s = 0` for
+the old hard on/off.
+
+The **closing card** sits over the final fade-to-black and ends with the
+picture. Its auto text elides the shared month/year from the first date
+("3 – 9 August 2026", "28 May – 4 June 2026"); set `closing_text` to override
+or `closing_s = 0` to disable. It is skipped on a movie too short to give it
+clear air after the opening (both live on lane 3).
 
 ## Why each trigger is what it is
 

@@ -39,20 +39,29 @@ class Titles:
     opening_s: float = 5.0          # opening movie-title duration over the first clip
     day_title_s: float = 4.0        # day-divider title duration
     location_title_s: float = 4.0   # location lower-third duration
+    closing_s: float = 4.0          # closing card over the end fade (0 to disable)
+    closing_text: str = ""          # "" = auto: the trip's date range ("28 May – 4 June 2026")
+    fade_s: float = 0.5             # every title fades in/out over this (0 = pop on/off)
     opening_font_size: int = 84
     day_font_size: int = 96
     location_font_size: int = 60
+    closing_font_size: int = 72
     location_y: float = -360.0      # lower-third vertical position (0 = centre)
     font: str = "Helvetica Neue"
     # strftime patterns ("%-d" = no leading zero, macOS/Linux):
     date_format: str = "%A %-d %B %Y"          # day divider, e.g. "Thursday 28 May 2026"
     location_stamp_format: str = "%-d %b · %H:%M"  # appended under a location title
+    closing_range_format: str = "%-d %B %Y"    # auto closing text renders the trip's
+                                               # first/last day with this (month/year
+                                               # dropped from the first when shared)
 
 
 @dataclass
 class Transitions:
     enabled: bool = True
-    dissolve_s: float = 1.0     # day/scene-boundary cross-dissolve length
+    dissolve_s: float = 1.0     # scene-boundary cross-dissolve length
+    day_dip_s: float = 1.5      # day boundaries dip through black for this long in
+                                # total (the "time has passed" cue; 0 = plain dissolve)
     start_fade_s: float = 1.0   # gentle fade up at the very start (0 to disable)
     end_fade_s: float = 2.0     # fade to black at the very end (0 to disable)
     # clip pairs that are ONE continuous recording split across files -> hard join
@@ -160,6 +169,44 @@ class Pace:
 
 
 @dataclass
+class Chapters:
+    """Index the movie into named chapters (YouTube-style).
+
+    Labels come from review.json: an explicit per-clip `chapter` field (written
+    by the optional `chapters` vision step, or by hand), falling back to the
+    `location` label, then to a day divider. The build emits an FCP
+    <chapter-marker> at each chapter start and writes _edit/chapters.txt +
+    _edit/youtube_description.txt with `M:SS Title` lines ready to paste into
+    the YouTube description. The chapter files are always written by `build`
+    when any labels exist; `enabled` only gates the vision *naming* step.
+    """
+    enabled: bool = False
+    vision_model: str = "gemma4:latest"   # multimodal Ollama model (naming step)
+    ollama_url: str = "http://localhost:11434/api/generate"
+    frames_per_clip: int = 3         # frames sampled per clip for the model
+    frame_px: int = 320              # downscale sampled frames to this width
+    # YouTube rules: first chapter at 0:00, each chapter >= 10s, >= 3 chapters.
+    min_chapter_s: float = 10.0      # shorter chapters merge into the previous one
+    day_format: str = "%A %-d %B"    # label for a new day with no chapter/location
+
+
+@dataclass
+class Music:
+    """Optional background-music bed under the whole edit.
+
+    The listed files play in order on a connected audio lane at a low, constant
+    volume (the camera audio stays the foreground), fading in at the start and
+    out at the end of the movie (or at the music's own end if it runs short).
+    No looping: bring enough music, or let it end early — both read fine.
+    """
+    files: list[str] = field(default_factory=list)  # audio files, relative to the
+                                                    # project dir (or absolute)
+    volume_db: float = -18.0         # bed level; camera audio remains foreground
+    fade_in_s: float = 3.0           # music fade-in at the start
+    fade_out_s: float = 4.0          # music fade-out at the end
+
+
+@dataclass
 class Timezone:
     """The camera clock rarely matches local time. Apply a single offset to get
     local wall-clock time for the titles, with an exception list for clips shot
@@ -204,11 +251,13 @@ class Config:
     timezone: Timezone = field(default_factory=Timezone)
     titles: Titles = field(default_factory=Titles)
     transitions: Transitions = field(default_factory=Transitions)
+    music: Music = field(default_factory=Music)
     cuts: Cuts = field(default_factory=Cuts)
     sheets: Sheets = field(default_factory=Sheets)
     sanitize: Sanitize = field(default_factory=Sanitize)
     glitch: Glitch = field(default_factory=Glitch)
     pace: Pace = field(default_factory=Pace)
+    chapters: Chapters = field(default_factory=Chapters)
 
     # --- derived paths ---
     @property
@@ -230,6 +279,14 @@ class Config:
     @property
     def review_json(self) -> Path:
         return self.edit_dir / "review.json"
+
+    @property
+    def chapters_txt(self) -> Path:
+        return self.edit_dir / "chapters.txt"
+
+    @property
+    def youtube_description(self) -> Path:
+        return self.edit_dir / "youtube_description.txt"
 
     @property
     def out_fcpxml(self) -> Path:
@@ -263,8 +320,9 @@ def _from_dict(klass, data: dict):
     # nested sections are typed by annotation name; handle them explicitly so we
     # don't depend on `from __future__ import annotations` turning types to str.
     nested = {"discovery": Discovery, "timezone": Timezone, "titles": Titles,
-              "transitions": Transitions, "cuts": Cuts, "sheets": Sheets,
-              "sanitize": Sanitize, "glitch": Glitch, "pace": Pace}
+              "transitions": Transitions, "music": Music, "cuts": Cuts,
+              "sheets": Sheets, "sanitize": Sanitize, "glitch": Glitch,
+              "pace": Pace, "chapters": Chapters}
     for name, sub in nested.items():
         if name in data and isinstance(data[name], dict):
             kwargs[name] = _from_dict(sub, data[name])

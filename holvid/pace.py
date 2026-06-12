@@ -51,7 +51,8 @@ def _classify_frame(cfg: Config, prompt: str, img: bytes) -> bool:
     b64 = base64.b64encode(img).decode("ascii")
     try:
         resp = ollama_generate(cfg.pace.ollama_url, cfg.pace.vision_model,
-                               prompt, images=[b64], timeout=120)
+                               prompt, images=[b64], timeout=120,
+                               num_predict=128)
         return bool(json.loads(resp).get("boring"))
     except Exception as e:                          # network / model / JSON error
         print(f"  [warn] vision classify failed: {e}")

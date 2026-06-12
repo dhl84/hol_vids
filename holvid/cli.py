@@ -18,8 +18,13 @@ optional holvid.toml. Commands:
     pace      speed up boring transit (walking/driving/eating) using a local
               vision model -> writes `speed` spans; the build plays them faster
               and muted. Needs ffmpeg + a multimodal Ollama model. See [pace].
+    chapters  name each clip's event with a local vision model -> writes
+              `chapter` labels into review.json. The build turns label changes
+              into FCP chapter markers + YouTube `M:SS Title` timestamps
+              (_edit/chapters.txt, youtube_description.txt). See [chapters].
     upright   bake pillarboxed copies of rotated clips (run before build)
     build     assemble the titled FCPXML    -> _edit/<event>.fcpxml
+              (+ chapters.txt / youtube_description.txt when labels exist)
     all       probe + sheets + scaffold review (the prep before you fill it in)
 
 Run with no command for usage. Example:
@@ -37,14 +42,15 @@ from . import probe, timeline
 from .config import Config
 
 COMMANDS = ("probe", "sheets", "review", "sanitize", "glitch", "pace",
-            "upright", "build", "all")
+            "chapters", "upright", "build", "all")
 
 
 def _scaffold_review(cfg: Config, clips: list[dict]) -> None:
     if cfg.review_json.exists():
         print(f"[review] {cfg.review_json} exists — not overwriting")
         return
-    out = {"clips": {c["name"]: {"location": "", "summary": "", "dead": []}
+    out = {"clips": {c["name"]: {"location": "", "chapter": "", "summary": "",
+                                 "dead": []}
                      for c in clips},
            "title": cfg.title}
     cfg.edit_dir.mkdir(parents=True, exist_ok=True)
@@ -90,6 +96,9 @@ def main(argv: list[str] | None = None) -> int:
         sanitize.detect(cfg, _load_clips(cfg))
     elif cmd == "glitch":
         from . import glitch
+        if not cfg.glitch.enabled:
+            print("[glitch] [glitch].enabled is false in holvid.toml — "
+                  "running anyway since you asked for it explicitly")
         glitch.detect(cfg, _load_clips(cfg))
     elif cmd == "pace":
         from . import pace
@@ -97,6 +106,12 @@ def main(argv: list[str] | None = None) -> int:
             print("[pace] [pace].enabled is false in holvid.toml — "
                   "running anyway since you asked for it explicitly")
         pace.detect(cfg, _load_clips(cfg))
+    elif cmd == "chapters":
+        from . import chapters
+        if not cfg.chapters.enabled:
+            print("[chapters] [chapters].enabled is false in holvid.toml — "
+                  "running anyway since you asked for it explicitly")
+        chapters.detect(cfg, _load_clips(cfg))
     elif cmd == "upright":
         timeline.bake_upright(cfg, _load_clips(cfg))
     elif cmd == "all":
@@ -113,12 +128,15 @@ def main(argv: list[str] | None = None) -> int:
         ok, msg = timeline.validate(out, cfg.fcpxml_version)
         s = getattr(timeline.build, "stats", {})
         print(f"[fcpxml] {out.name}: {len(clips)} clips -> {s.get('segments')} "
-              f"segments, {s.get('transitions')} dissolves, cut {s.get('cuts')} "
+              f"segments, {s.get('transitions')} dissolves, "
+              f"{s.get('day_dips', 0)} day dips, cut {s.get('cuts')} "
               f"clips (~{s.get('cut_s', 0):.0f}s removed), "
               f"{s.get('markers')} review markers, "
               f"{s.get('mutes', 0)} muted spans (~{s.get('mute_s', 0):.0f}s), "
               f"{s.get('speedups', 0)} speed-ups "
-              f"(~{s.get('speed_saved_s', 0):.0f}s shorter)")
+              f"(~{s.get('speed_saved_s', 0):.0f}s shorter), "
+              f"{s.get('chapters', 0)} chapters, "
+              f"~{s.get('music_s', 0):.0f}s music bed")
         print(f"[fcpxml] DTD {'valid' if ok else 'INVALID: ' + msg}")
         return 0 if ok else 1
     return 0
