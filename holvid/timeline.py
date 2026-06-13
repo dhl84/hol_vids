@@ -6,9 +6,12 @@ Consumes:
 
 Produces a single chronological timeline (all clips, all days) with:
   * an opening movie title over the first clip
-  * a day-divider title at each day's first clip (calendar-date change)
-  * a location lower-third whenever the location label changes
-  * a closing card (the trip's date range) over the final fade-out
+  * an optional day-divider title at each day's first clip (calendar-date
+    change; [titles].day_dividers, on by default)
+  * a location lower-third whenever the location label changes (its stamp
+    carries the year by default)
+  * an optional closing card (the trip's date range) over the final fade-out
+    ([titles].closing_s, off by default)
   * every title fading gently in/out ([titles].fade_s)
   * obvious-junk dead spans removed; ambiguous ones left as REVIEW markers
   * subtle cross-dissolves at scene boundaries + fade in/out; day boundaries
@@ -719,14 +722,15 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
             if is_first:                            # opening movie title, lane 3
                 _title(clip, T, cfg, "rTitle", 3, s["vin"], T.secs(tt.opening_s),
                        next_ts(), movie_title, tt.opening_font_size, None)
-            if new_day and ldt is not None:         # day divider, lane 2
-                day_off = s["vin"] + (T.secs(tt.opening_s) if is_first else 0)
-                date_txt = ldt.strftime(tt.date_format)
-                city = day_city.get(s["daykey"])
-                if city:                            # "Paris · Saturday 28 March 2026"
-                    date_txt = f"{city} · {date_txt}"
-                _title(clip, T, cfg, "rTitle", 2, day_off, T.secs(tt.day_title_s),
-                       next_ts(), date_txt, tt.day_font_size, None)
+            if new_day and ldt is not None:         # new calendar day
+                if tt.day_dividers:                 # centered day-divider card, lane 2
+                    day_off = s["vin"] + (T.secs(tt.opening_s) if is_first else 0)
+                    date_txt = ldt.strftime(tt.date_format)
+                    city = day_city.get(s["daykey"])
+                    if city:                        # "Paris · Saturday 28 March 2026"
+                        date_txt = f"{city} · {date_txt}"
+                    _title(clip, T, cfg, "rTitle", 2, day_off, T.secs(tt.day_title_s),
+                           next_ts(), date_txt, tt.day_font_size, None)
                 prev_day = s["daykey"]
                 prev_loc = None                     # re-announce location each new day
             if s["loc"] and s["loc"] != prev_loc:   # location lower-third, lane 1

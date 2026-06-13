@@ -18,9 +18,10 @@ continuous-recording seams, cut-word list, …) is now a field in a per-trip
 > Verified: rebuilding the Paris 2026 timeline through this tool produced a
 > **byte-for-byte identical** FCPXML to the hand-built original (verified before
 > the chapters feature). A rebuild today additionally emits `<chapter-marker>`
-> elements, title fade-ins/outs, day-boundary dips to black, and a closing date
-> card — set `[titles].fade_s = 0`, `closing_s = 0` and
-> `[transitions].day_dip_s = 0` to reproduce the original look.
+> elements, title fade-ins/outs, and day-boundary dips to black — set
+> `[titles].fade_s = 0`, `[transitions].day_dip_s = 0`, and
+> `location_stamp_format = "%-d %b · %H:%M"` (the original stamp had no year) to
+> reproduce the original look. (The closing card is off by default.)
 
 ## Requirements
 
@@ -227,8 +228,9 @@ rotation, generic title). Key sections:
 - `title` / `event_name` — the opening card + FCP project name
 - `[timezone]` — `offset_hours` to convert camera time → local for the titles,
   with a `camera_time_clips` exception list
-- `[titles]` — fonts, sizes, durations, title fade (`fade_s`), closing card
-  (`closing_s` / `closing_text`), date/stamp `strftime` formats
+- `[titles]` — fonts, sizes, durations, title fade (`fade_s`), day-divider
+  toggle (`day_dividers`), optional closing card (`closing_s` / `closing_text`),
+  date/stamp `strftime` formats (the location stamp includes the year by default)
 - `[transitions]` — dissolve length, day dip-to-black (`day_dip_s`), start/end
   fades, `continuous_seams` (clip pairs that are one recording split across
   files → hard join)
@@ -282,10 +284,13 @@ edit them by hand.
 
 - **Chronological spine.** Every clip becomes one asset; kept ranges become
   `asset-clip` segments in time order across all days.
-- **Titles.** See [`TITLES.md`](TITLES.md) for the full logic — opening (once),
-  day divider (on calendar-date change), location lower-third (on label change),
-  closing card (the trip's date range, over the final fade-out), all rendered in
-  local time and each fading gently in/out (`[titles].fade_s`).
+- **Titles.** See [`TITLES.md`](TITLES.md) for the full logic — opening (once);
+  an optional centered **day-divider** card on each new date
+  (`[titles].day_dividers`, on by default — turn it off to let the dated
+  lower-third and the day dip carry the day rather than repeating the date in a
+  card); a **location lower-third** on label change, whose stamp includes the
+  **year**; and an optional **closing card** (`closing_s`, **off by default**).
+  All render in local time and fade gently in/out (`[titles].fade_s`).
 - **Dissolves & day dips.** A 1 s cross-dissolve straddles each scene boundary
   where both neighbours are long enough to lend a handle; `continuous_seams`
   force a hard join. A **day boundary dips through black** instead

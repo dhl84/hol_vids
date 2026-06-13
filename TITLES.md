@@ -12,20 +12,30 @@ so a title never re-fires mid-clip.
 | lane | title | trigger | text | position | default font |
 |------|-------|---------|------|----------|--------------|
 | 3 | **Opening** | first clip of the whole edit only | `cfg.title` (or `review.json["title"]`) | centre | 84 |
-| 2 | **Day divider** | the clip's **calendar date** differs from the previous title's | `local_dt.strftime(date_format)` → "Thursday 28 May 2026" | centre | 96 |
-| 1 | **Location** | the clip's **location label** differs from the previous one | `"<place>\n<stamp>"` → "Gare du Nord\n28 May · 18:48" | lower third (`location_y = -360`) | 60 |
-| 3 | **Closing** | last segment of the edit (emitted on any segment, not just a clip's first) | `closing_text`, or auto: the trip's date range → "28 May – 4 June 2026" | centre | 72 |
+| 2 | **Day divider** | the clip's **calendar date** changes **and** `[titles].day_dividers` is on (default) | `local_dt.strftime(date_format)` → "Thursday 28 May 2026" (a city prefix if `[geo].day_includes_city`) | centre | 96 |
+| 1 | **Location** | the clip's **location label** differs from the previous one | `"<place>\n<stamp>"` → "Gare du Nord\n28 May 2026 · 18:48" | lower third (`location_y = -360`) | 60 |
+| 3 | **Closing** | last segment, **and** `[titles].closing_s > 0` (off by default) | `closing_text`, or auto: the trip's date range → "28 May – 4 June 2026" | centre | 72 |
 
 Every title **fades in and out** over `[titles].fade_s` (default 0.5 s, capped
 at a third of the title's duration) rather than popping on/off — an
 `adjust-blend` fade on the title itself, no extra effects. Set `fade_s = 0` for
 the old hard on/off.
 
-The **closing card** sits over the final fade-to-black and ends with the
-picture. Its auto text elides the shared month/year from the first date
-("3 – 9 August 2026", "28 May – 4 June 2026"); set `closing_text` to override
-or `closing_s = 0` to disable. It is skipped on a movie too short to give it
-clear air after the opening (both live on lane 3).
+**One date per clip.** The location stamp carries the date **with the year**
+(`location_stamp_format`, default `"%-d %b %Y · %H:%M"`). So when a clip already
+shows a dated lower-third, a centered day-divider card on the same clip just
+repeats the date — turn day dividers off (`[titles].day_dividers = false`) and
+the dated lower-third plus the day **dip-to-black** carry the day instead. Keep
+them on when clips have no location labels (then the divider is the only place
+the date appears), or for a single-day event where one establishing card
+(optionally "City · Date") is wanted. The new-day **location re-announce** still
+fires regardless, so a new day always re-shows its first place with the new date.
+
+The **closing card** is **off by default** (`closing_s = 0`); give it a duration
+to opt in. It sits over the final fade-to-black and ends with the picture. Its
+auto text elides the shared month/year from the first date ("3 – 9 August 2026",
+"28 May – 4 June 2026"); set `closing_text` to override. It is skipped on a movie
+too short to give it clear air after the opening (both live on lane 3).
 
 ## Why each trigger is what it is
 
@@ -38,10 +48,13 @@ clear air after the opening (both live on lane 3).
   previous divider. This matters because a single evening's shooting often
   spills past midnight into the next file-system folder, and a download can put
   one day's clips across two folders. Grouping on the actual local date keeps
-  "one divider per real day" regardless of how the files are foldered. When the
-  day changes we also reset the remembered location (`prev_loc = None`) so the
-  **first place of a new day is always re-announced**, even if you happen to wake
-  up in the same neighbourhood you went to sleep in.
+  "one divider per real day" regardless of how the files are foldered. The
+  *card* is gated by `[titles].day_dividers`, but the day-change bookkeeping is
+  not: when the day changes we always reset the remembered location
+  (`prev_loc = None`) so the **first place of a new day is always re-announced**
+  (even with dividers off, and even if you wake up in the same neighbourhood) —
+  that re-announced, dated lower-third is what carries the day when there's no
+  divider card.
 
 - **Location — on change of a human/AI label.** The picture can't tell you
   "Gare du Nord"; that's editorial knowledge. So `location` comes from

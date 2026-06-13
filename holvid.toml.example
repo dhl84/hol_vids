@@ -44,9 +44,16 @@ camera_time_clips = ["DJI_20260528144150_0001_D.MP4",
 # --- title styling + timing -----------------------------------------------
 [titles]
 opening_s            = 5.0   # opening title duration over the first clip
-day_title_s          = 4.0   # day-divider title
+day_dividers         = true  # centered day-divider date card on each new day.
+                             # false => no card; the dated location lower-third +
+                             # the day dip-to-black carry the day (avoids printing
+                             # the date twice on one clip — once in a card, once
+                             # in the lower-third). Turn off for a continuous
+                             # montage or when every clip has a dated lower-third.
+day_title_s          = 4.0   # day-divider title duration
 location_title_s     = 4.0   # location lower-third
-closing_s            = 4.0   # closing card over the end fade (0 disables)
+closing_s            = 0.0   # closing card over the end fade (0 = off; set a
+                             # duration to show closing_text / the trip date range)
 closing_text         = ""    # "" = auto: the trip's date range ("28 May – 4 June 2026")
 fade_s               = 0.5   # every title fades in/out over this (0 = pop on/off)
 opening_font_size    = 84
@@ -55,8 +62,8 @@ location_font_size   = 60
 closing_font_size    = 72
 location_y           = -360  # lower-third vertical position (0 = centre)
 font                 = "Helvetica Neue"
-date_format          = "%A %-d %B %Y"      # day divider -> "Thursday 28 May 2026"
-location_stamp_format = "%-d %b · %H:%M"   # under location -> "28 May · 18:48"
+date_format          = "%A %-d %B %Y"        # day divider -> "Thursday 28 May 2026"
+location_stamp_format = "%-d %b %Y · %H:%M"  # under location -> "28 May 2026 · 18:48"
 
 # --- transitions ----------------------------------------------------------
 [transitions]

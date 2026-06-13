@@ -37,9 +37,14 @@ class Sheets:
 @dataclass
 class Titles:
     opening_s: float = 5.0          # opening movie-title duration over the first clip
+    day_dividers: bool = True       # show a centered day-divider card on each new
+                                    # calendar day. Off => rely on the day dip-to-black
+                                    # + the dated location lower-third to mark the day
+                                    # (avoids printing the date twice on one clip).
     day_title_s: float = 4.0        # day-divider title duration
     location_title_s: float = 4.0   # location lower-third duration
-    closing_s: float = 4.0          # closing card over the end fade (0 to disable)
+    closing_s: float = 0.0          # closing card over the end fade (0 = off; opt in
+                                    # with a duration to show closing_text / the range)
     closing_text: str = ""          # "" = auto: the trip's date range ("28 May – 4 June 2026")
     fade_s: float = 0.5             # every title fades in/out over this (0 = pop on/off)
     opening_font_size: int = 84
@@ -50,7 +55,7 @@ class Titles:
     font: str = "Helvetica Neue"
     # strftime patterns ("%-d" = no leading zero, macOS/Linux):
     date_format: str = "%A %-d %B %Y"          # day divider, e.g. "Thursday 28 May 2026"
-    location_stamp_format: str = "%-d %b · %H:%M"  # appended under a location title
+    location_stamp_format: str = "%-d %b %Y · %H:%M"  # under a location title -> "28 May 2026 · 18:48"
     closing_range_format: str = "%-d %B %Y"    # auto closing text renders the trip's
                                                # first/last day with this (month/year
                                                # dropped from the first when shared)
