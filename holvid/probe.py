@@ -105,7 +105,8 @@ def build_manifest(cfg: Config) -> list[dict]:
     cfg.edit_dir.mkdir(parents=True, exist_ok=True)
     cfg.clips_json.write_text(json.dumps(clips, indent=2))
     total = sum(c["duration"] for c in clips)
-    print(f"[probe] {len(clips)} clips, {total / 3600:.0f}h{total % 3600 / 60:02.0f}m "
+    h, m = int(total // 3600), int((total % 3600) // 60)
+    print(f"[probe] {len(clips)} clips, {h}h{m:02d}m "  # floor, not round (0.76h is 0h46m, not 1h46m)
           f"-> {cfg.clips_json}")
     return clips
 
