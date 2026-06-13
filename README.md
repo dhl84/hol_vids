@@ -40,7 +40,7 @@ continuous-recording seams, cut-word list, …) is now a field in a per-trip
 
 ```
 probe ──> sheets ──> (you/Claude fill review.json) ──┐
-                                                      ├─ [sanitize] [glitch] [pace] [chapters] ──> [upright] ──> build
+                                                      ├─ [sanitize] [glitch] [pace] [chapters] [geo] ──> [upright] ──> build
               (optional auto-analysis, any order) ────┘
 ```
 
@@ -60,6 +60,8 @@ probe ──> sheets ──> (you/Claude fill review.json) ──┐
    - **pace** — speed up boring transit (walking/driving/eating), muted.
    - **chapters** — name each clip's event with a vision model → `chapter`
      labels (YouTube chapter titles).
+   - **geo** — read each clip's GoPro GPS (GPMF) and reverse-geocode it →
+     `geo` field + auto-filled `location` labels (city/landmark).
 5. **upright** — bake pillarboxed landscape copies of any vertical clips so FCP
    never has to rotate/conform. Auto-detected from rotation metadata.
 6. **build** — assemble `_edit/<event>.fcpxml`: titles, dissolves, auto-cuts,
@@ -84,12 +86,12 @@ Then in Final Cut Pro: **File ▸ Import ▸ XML**. It creates a new project and
 touches nothing else. Review markers show in **Timeline Index ▸ Tags**.
 
 Individual commands: `probe`, `sheets`, `review`, `sanitize`, `glitch`, `pace`,
-`chapters`, `upright`, `build`, `all`.
+`chapters`, `geo`, `upright`, `build`, `all`.
 
 ## Optional auto-analysis
 
-Four optional steps look at the footage and write proposals into `review.json`
-(`mute` / `dead` / `speed` / `chapter`). They're independent — run any subset, in any order —
+Five optional steps look at the footage and write proposals into `review.json`
+(`mute` / `dead` / `speed` / `chapter` / `geo`). They're independent — run any subset, in any order —
 and all local. Re-run freely: muting and speed-ramps never move a frame, so you
 can tweak the JSON by hand and rebuild. Each is off by default; enable in
 `holvid.toml` or just run the command (it runs when invoked explicitly).
@@ -179,6 +181,37 @@ to `0:00`, a chapter shorter than `[chapters].min_chapter_s` (default 10 s,
 YouTube's minimum) loses its slot to the next label, and the build warns if
 fewer than 3 chapters remain (YouTube's minimum for the chapter bar).
 
+### `geo` — place names from GoPro GPS (exiftool + reverse geocoding)
+
+```sh
+uv pip install reverse_geocoder       # one-time, for the offline step
+brew install exiftool                  # reads the GoPro GPMF GPS track
+uv run holvid "/Users/you/Downloads/Trip" geo
+```
+
+GoPro Hero 5+ records a GPS track in a `gpmd` data stream. This reads a
+representative coordinate per clip (median of the valid fixes) with `exiftool`,
+reverse-geocodes it, and writes a `geo` field per clip into review.json — plus,
+when `[geo].fill_empty_location` is on (default), it fills any **empty**
+`location` label (never overwriting a hand-written one). With
+`[geo].day_includes_city`, the build prefixes each day divider with the day's
+city ("Paris · Friday 28 March 2025").
+
+Coverage is whatever the camera caught: a clip with **no satellite fix**
+(indoors, or before GPS locked) gets nothing and keeps its visual label, so GPS
+**fills and verifies** coarse location rather than replacing the contact-sheet
+read. Two modes:
+
+- **offline** (default, fully local): `reverse_geocoder` → nearest **city +
+  country**. Tells trip legs apart (Seoul vs Paris vs London); can't name
+  landmarks within a city.
+- **online** (`[geo].online = true`, opt-in): also asks **OpenStreetMap
+  Nominatim** for a landmark/street name ("Jardin du Carrousel", "Quai Aimé
+  Césaire"). Richer captions, but it **sends your coordinates to a third-party
+  server** — so it's off by default, rate-limited (≤ 1 req/s per their policy),
+  and announced when it runs. The step prints a coordinate→place report so you
+  can verify your labels; coordinates are cached in `_edit/gps.json`.
+
 > First time: confirm in FCP that mutes are silent and speed-ramps play at the
 > right rate. `<mute>` and `<timeMap>` are the purpose-built, DTD-valid
 > mechanisms; the spans are also listed in `review.json` for a manual pass.
@@ -211,6 +244,8 @@ rotation, generic title). Key sections:
   categories)
 - `[chapters]` — YouTube-chapter naming (`vision_model`, `frames_per_clip`,
   `min_chapter_s`, `day_format`)
+- `[geo]` — GoPro-GPS place names (`fill_empty_location`, `day_includes_city`,
+  `online` + Nominatim settings for opt-in landmark lookup)
 
 ## review.json schema
 
@@ -223,7 +258,9 @@ rotation, generic title). Key sections:
       "summary": "Family in the arrivals hall.",  // notes only; not in the XML
       "dead":  [[12.0, 14.8, "near-black"]],       // cut footage (cut-word reason)
       "mute":  [[31.5, 35.0, "argument"]],         // keep picture, silence audio
-      "speed": [[40.0, 70.0, 2.0, "boring transit"]] // keep picture, 2x + muted
+      "speed": [[40.0, 70.0, 2.0, "boring transit"]], // keep picture, 2x + muted
+      "geo":   {"lat": 48.8809, "lon": 2.3553, "city": "Paris", "country": "France",
+                "place": "Gare du Nord"}           // from GoPro GPS (geo step)
     }
   },
   "title": "Optional movie-title override"
@@ -295,6 +332,8 @@ edit them by hand.
   `speed` spans
 - `holvid/chapters.py` — optional: local vision model names each clip's event →
   `chapter` labels (YouTube chapters)
+- `holvid/geo.py` — optional: GoPro GPS (exiftool/GPMF) → reverse-geocoded
+  `geo` field + auto-filled `location` (offline city; opt-in online landmark)
 - `holvid/timeline.py` — FCPXML builder (titles, dissolves, cuts, audio mutes,
   speed-ramps), rotation bake, DTD validation
 - `holvid/cli.py` — `holvid <project_dir> <command>`

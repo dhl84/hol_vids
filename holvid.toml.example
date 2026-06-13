@@ -171,6 +171,22 @@ frame_px        = 320      # downscale sampled frames to this width
 min_chapter_s   = 10.0     # YouTube's minimum; shorter chapters lose their slot
 day_format      = "%A %-d %B"  # chapter label for a day with no chapter/location
 
+# --- place names from GoPro GPS (optional `geo` step) ---------------------
+# Reads each clip's GoPro GPS (GPMF telemetry) with exiftool, reverse-geocodes
+# it, writes a `geo` field per clip + fills empty `location` labels. Only clips
+# with a satellite fix get a coordinate (indoor/no-fix clips keep their visual
+# labels). Needs `exiftool` on PATH + `uv pip install reverse_geocoder`.
+[geo]
+enabled             = false
+fill_empty_location = true    # auto-fill blank location labels (never overwrites)
+day_includes_city   = true    # prefix day dividers with the day's city ("Paris · …")
+# Online landmark enrichment (OPT-IN): also asks OpenStreetMap Nominatim for a
+# landmark/street name. Richer captions, but SENDS YOUR COORDINATES to a server.
+online        = false
+online_zoom   = 16            # 16≈building/landmark, 14≈suburb
+user_agent    = "holvid-geo (personal video tool)"  # Nominatim requires a UA
+request_pause_s = 1.1         # Nominatim policy: <= 1 request/second
+
 # --- contact-sheet sampling -----------------------------------------------
 [sheets]
 interval_s = 6     # seconds between sampled frames

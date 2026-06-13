@@ -584,6 +584,7 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                 "tcfmt": c["tcfmt"], "rotated": c["rotated"], "factor": factor,
                 "daykey": c["daykey"], "ldt": local_dt(c),
                 "loc": (rc.get("location") or "").strip(),
+                "geo_city": ((rc.get("geo") or {}).get("city") or "").strip(),
                 "chapter": (rc.get("chapter") or "").strip(),
                 "clip_first": sidx == 0,
                 "marks": [(a, b, r) for (a, b, r) in marks if s0 <= a < s1],
@@ -631,6 +632,14 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         return src if s["factor"] == 1.0 else max(1, round(src / s["factor"]))
 
     total_out_f = sum(_out_dur_f(s) for s in segs)   # movie length (output frames)
+    # per-day city for the day divider ([geo].day_includes_city): the first
+    # GPS-fixed city seen that day (early clips often lack a fix, so we don't
+    # restrict to the day's very first clip).
+    day_city: dict = {}
+    if cfg.geo.day_includes_city:
+        for s in segs:
+            if s["geo_city"] and s["daykey"] not in day_city:
+                day_city[s["daykey"]] = s["geo_city"]
     # closing card needs clear air after the opening (both sit on lane 3)
     closing_text = (_closing_text(cfg, [s["ldt"] for s in segs if s["ldt"]])
                     if cfg.titles.closing_s > 0 and total_out_f * T.d / T.n
@@ -712,9 +721,12 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                        next_ts(), movie_title, tt.opening_font_size, None)
             if new_day and ldt is not None:         # day divider, lane 2
                 day_off = s["vin"] + (T.secs(tt.opening_s) if is_first else 0)
+                date_txt = ldt.strftime(tt.date_format)
+                city = day_city.get(s["daykey"])
+                if city:                            # "Paris · Saturday 28 March 2026"
+                    date_txt = f"{city} · {date_txt}"
                 _title(clip, T, cfg, "rTitle", 2, day_off, T.secs(tt.day_title_s),
-                       next_ts(), ldt.strftime(tt.date_format),
-                       tt.day_font_size, None)
+                       next_ts(), date_txt, tt.day_font_size, None)
                 prev_day = s["daykey"]
                 prev_loc = None                     # re-announce location each new day
             if s["loc"] and s["loc"] != prev_loc:   # location lower-third, lane 1

@@ -191,6 +191,37 @@ class Chapters:
 
 
 @dataclass
+class Geo:
+    """Derive place names from GoPro GPS (GPMF telemetry) for captions/titles.
+
+    GoPro Hero 5+ embeds a GPS track in a `gpmd` data stream. This step pulls a
+    representative coordinate per clip with `exiftool` (median of valid fixes),
+    reverse-geocodes it, and writes a `geo` field per clip into review.json
+    (optionally filling empty `location` labels). Only clips with a satellite
+    fix get a coordinate — indoor/no-fix clips are skipped and keep their visual
+    labels. The build can prefix each day divider with the day's city.
+
+    Offline geocoding (default) stays fully local: `reverse_geocoder` maps the
+    coordinate to the nearest city + country — great for telling trip legs apart
+    (Seoul vs Paris), not for landmarks within a city. Online geocoding
+    (`online = true`, opt-in) additionally asks OpenStreetMap Nominatim for a
+    landmark/street name — richer captions, but it SENDS YOUR COORDINATES to a
+    third-party server, so it is off by default.
+
+    Needs `exiftool` on PATH, and `reverse_geocoder` (pip) for the offline step.
+    """
+    enabled: bool = False
+    fill_empty_location: bool = True   # auto-fill blank `location` labels (never overwrites)
+    day_includes_city: bool = False    # prefix day dividers with the day's city
+    # --- online landmark enrichment (opt-in; sends coordinates off-machine) ---
+    online: bool = False
+    online_zoom: int = 16              # Nominatim zoom: 16≈building/landmark, 14≈suburb
+    nominatim_url: str = "https://nominatim.openstreetmap.org/reverse"
+    user_agent: str = "holvid-geo (personal video tool)"  # Nominatim requires a UA
+    request_pause_s: float = 1.1      # Nominatim policy: <= 1 request/second
+
+
+@dataclass
 class Music:
     """Optional background-music bed under the whole edit.
 
@@ -252,6 +283,7 @@ class Config:
     titles: Titles = field(default_factory=Titles)
     transitions: Transitions = field(default_factory=Transitions)
     music: Music = field(default_factory=Music)
+    geo: Geo = field(default_factory=Geo)
     cuts: Cuts = field(default_factory=Cuts)
     sheets: Sheets = field(default_factory=Sheets)
     sanitize: Sanitize = field(default_factory=Sanitize)
@@ -279,6 +311,10 @@ class Config:
     @property
     def review_json(self) -> Path:
         return self.edit_dir / "review.json"
+
+    @property
+    def gps_json(self) -> Path:
+        return self.edit_dir / "gps.json"
 
     @property
     def chapters_txt(self) -> Path:
@@ -320,9 +356,9 @@ def _from_dict(klass, data: dict):
     # nested sections are typed by annotation name; handle them explicitly so we
     # don't depend on `from __future__ import annotations` turning types to str.
     nested = {"discovery": Discovery, "timezone": Timezone, "titles": Titles,
-              "transitions": Transitions, "music": Music, "cuts": Cuts,
-              "sheets": Sheets, "sanitize": Sanitize, "glitch": Glitch,
-              "pace": Pace, "chapters": Chapters}
+              "transitions": Transitions, "music": Music, "geo": Geo,
+              "cuts": Cuts, "sheets": Sheets, "sanitize": Sanitize,
+              "glitch": Glitch, "pace": Pace, "chapters": Chapters}
     for name, sub in nested.items():
         if name in data and isinstance(data[name], dict):
             kwargs[name] = _from_dict(sub, data[name])

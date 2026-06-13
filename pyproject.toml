@@ -6,6 +6,13 @@ readme = "README.md"
 requires-python = ">=3.11"          # tomllib is stdlib from 3.11
 dependencies = []                    # stdlib only; needs ffmpeg/ffprobe on PATH
 
+# Optional, per-step extras (each analysis step is opt-in):
+#   sanitize -> mlx-whisper          (transcription; Ollama call is stdlib)
+#   geo      -> reverse_geocoder     (offline reverse geocoding; needs exiftool on PATH)
+[project.optional-dependencies]
+geo = ["reverse_geocoder"]
+sanitize = ["mlx-whisper"]
+
 [project.scripts]
 holvid = "holvid.cli:main"
 

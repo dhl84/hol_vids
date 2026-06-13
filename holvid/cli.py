@@ -22,6 +22,10 @@ optional holvid.toml. Commands:
               `chapter` labels into review.json. The build turns label changes
               into FCP chapter markers + YouTube `M:SS Title` timestamps
               (_edit/chapters.txt, youtube_description.txt). See [chapters].
+    geo       read each clip's GoPro GPS (GPMF) with exiftool, reverse-geocode
+              it (offline city/country; opt-in online landmark) -> writes a
+              `geo` field + fills empty `location` labels in review.json. Needs
+              exiftool + reverse_geocoder. See [geo].
     upright   bake pillarboxed copies of rotated clips (run before build)
     build     assemble the titled FCPXML    -> _edit/<event>.fcpxml
               (+ chapters.txt / youtube_description.txt when labels exist)
@@ -42,7 +46,7 @@ from . import probe, timeline
 from .config import Config
 
 COMMANDS = ("probe", "sheets", "review", "sanitize", "glitch", "pace",
-            "chapters", "upright", "build", "all")
+            "chapters", "geo", "upright", "build", "all")
 
 
 def _scaffold_review(cfg: Config, clips: list[dict]) -> None:
@@ -112,6 +116,12 @@ def main(argv: list[str] | None = None) -> int:
             print("[chapters] [chapters].enabled is false in holvid.toml — "
                   "running anyway since you asked for it explicitly")
         chapters.detect(cfg, _load_clips(cfg))
+    elif cmd == "geo":
+        from . import geo
+        if not cfg.geo.enabled:
+            print("[geo] [geo].enabled is false in holvid.toml — "
+                  "running anyway since you asked for it explicitly")
+        geo.detect(cfg, _load_clips(cfg))
     elif cmd == "upright":
         timeline.bake_upright(cfg, _load_clips(cfg))
     elif cmd == "all":

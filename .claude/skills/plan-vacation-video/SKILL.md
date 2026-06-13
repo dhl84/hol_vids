@@ -1,6 +1,6 @@
 ---
 name: plan-vacation-video
-description: Turn a folder of raw family-vacation clips into a titled, review-ready Final Cut Pro timeline using the hol_vids tool. Probes and contact-sheets the footage, then READS the sheets to fill review.json (location label + dead spans per clip) — because locations are editorial knowledge the picture can't supply and only the contact sheets reveal what each clip contains. Optional local auto-analysis can additionally: mute sensitive speech AND arguments in any language (English/Korean/…), cut brief camera glitches (covered/knocked lens, frozen frames), speed up boring transit (walking/driving/eating), and name YouTube chapters per event with a vision model. The build emits FCP chapter markers plus M:SS timestamps to paste into the YouTube description. Then it bakes any vertical clips upright and builds the FCPXML. Use when editing vacation/holiday/trip footage into a movie, when the user mentions cutting a trip video, when they want to mute/remove sensitive audio, cut camera mishaps, or speed up boring sections, or when they want YouTube chapters/timestamps for the upload.
+description: Turn a folder of raw family-vacation clips into a titled, review-ready Final Cut Pro timeline using the hol_vids tool. Probes and contact-sheets the footage, then READS the sheets to fill review.json (location label + dead spans per clip) — because locations are editorial knowledge the picture can't supply and only the contact sheets reveal what each clip contains. Optional local auto-analysis can additionally: mute sensitive speech AND arguments in any language (English/Korean/…), cut brief camera glitches (covered/knocked lens, frozen frames), speed up boring transit (walking/driving/eating), name YouTube chapters per event with a vision model, and derive place names from GoPro GPS (GPMF) for captions and day-divider cities. The build emits FCP chapter markers plus M:SS timestamps to paste into the YouTube description. Then it bakes any vertical clips upright and builds the FCPXML. Use when editing vacation/holiday/trip footage into a movie, when the user mentions cutting a trip video, when they want to mute/remove sensitive audio, cut camera mishaps, or speed up boring sections, or when they want YouTube chapters/timestamps for the upload.
 ---
 
 # Plan & produce a vacation-video edit
@@ -96,6 +96,7 @@ fields, so they compose freely on the same clip:
 | `glitch`   | `dead` | cut footage, dissolve over gap | ffmpeg only |
 | `pace`     | `speed`| play faster + muted, keep picture | ffmpeg + vision model |
 | `chapters` | `chapter` | FCP chapter markers + YouTube timestamps | ffmpeg + vision model |
+| `geo` | `geo` + `location` | day-divider city; fills empty location labels | exiftool + reverse_geocoder |
 
 **`sanitize` — mute sensitive speech AND arguments (any language).** For private/
 controversial talk (medical, finances, embarrassing) **and arguments/fights**
@@ -141,6 +142,23 @@ and an empty `chapter` just continues the previous one. **The build derives
 chapters even without this step** (label preference `chapter` > `location` >
 day divider), so if the user only wants YouTube timestamps from their existing
 location labels, skip straight to build.
+
+**`geo` — place names from GoPro GPS (exiftool + reverse geocoding).** Run
+`uv run holvid "<folder>" geo` (needs `exiftool` on PATH + `uv pip install
+reverse_geocoder`). Reads each clip's GoPro GPMF GPS track, takes the median of
+the valid fixes, reverse-geocodes it, writes a `geo` field per clip and fills
+**empty** `location` labels (never overwrites yours). `[geo].day_includes_city`
+prefixes day dividers with the city ("Paris · …"). **Coverage is sparse by
+nature** — indoor / no-fix clips get nothing and keep their visual label, so
+treat GPS as fill + verification, not a replacement for the contact-sheet read.
+Offline mode (default) is fully local (city/country, good for telling trip legs
+apart). `[geo].online = true` is **opt-in** and **sends coordinates to
+OpenStreetMap Nominatim** for landmark names — only enable with the user's
+nod, and prefer offline for sensitive/residential locations (homes, a child's
+nursery). The step prints a coordinate→place report; verify labels before
+build. Note the older the camera, the less likely a fix: pre-Hero-5 and most
+DJI action cams have no GPS at all, and even Hero 11 needs GPS enabled + an
+outdoor sky view.
 
 ## Phase 3 — Upright, build, validate
 
