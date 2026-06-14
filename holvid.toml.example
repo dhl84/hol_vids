@@ -27,6 +27,9 @@ fcpxml_version       = "1.9"
 # globs relative to root, matched for video files (day-subfolders + loose files):
 patterns = ["*/*.MP4", "*/*.mp4", "*/*.MOV", "*/*.mov",
             "*.MP4", "*.mp4", "*.MOV", "*.mov"]
+# globs to leave OUT of the film — duplicate exports / trims you keep in the
+# folder but don't want in the edit. Matched on each file's path AND bare name.
+exclude = []   # e.g. ["Mochi Bite.MP4", "exports/*.mov"]
 # filename -> datetime: capture Y M D h m s (+ optional sequence no.).
 # Default matches DJI action cams. Falls back to creation_time, then mtime.
 filename_regex = '(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2}).*?(\d+)?'

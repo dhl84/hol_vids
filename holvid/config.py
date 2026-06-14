@@ -259,6 +259,10 @@ class Discovery:
         "*/*.MP4", "*/*.mp4", "*/*.MOV", "*/*.mov",
         "*.MP4", "*.mp4", "*.MOV", "*.mov",
     ])
+    # globs (relative to root) to leave OUT of the build — e.g. duplicate exports
+    # or trims you keep in the folder but don't want in the film. Matched against
+    # each discovered file's path and its bare name (so "Mochi Bite.MP4" works).
+    exclude: list[str] = field(default_factory=list)
     # filename -> datetime regex. Must capture, in order, 6 groups
     # (Y, M, D, h, m, s); an optional 7th group is the in-day sequence number.
     # Default matches DJI Osmo / Action ("DJI_20260528144150_0001_D.MP4").

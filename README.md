@@ -237,8 +237,9 @@ rotation, generic title). Key sections:
 - `[music]` — optional background-music bed (`files`, `volume_db`, fades)
 - `[cuts]` — `cut_words` (a dead span mentioning one is removed) vs `keep_words`
   / short spans → left as review markers
-- `[discovery]` — file globs and the filename→datetime regex (default fits DJI
-  action cams; falls back to container `creation_time`, then file mtime)
+- `[discovery]` — file globs, an `exclude` list (drop duplicate exports/trims
+  kept in the folder), and the filename→datetime regex (default fits DJI action
+  cams; falls back to container `creation_time`, then file mtime)
 - `[sanitize]` — sensitive-speech + argument muting (model, language,
   categories, `detect_arguments`)
 - `[glitch]` — camera-mishap cutting (black/freeze thresholds, `max_glitch_s`)

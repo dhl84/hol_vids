@@ -17,6 +17,7 @@ The contact sheets are what a human (or Claude) reads to write review.json.
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import math
 import re
@@ -27,6 +28,14 @@ from pathlib import Path
 from .config import Config
 
 
+def _excluded(p: Path, cfg: Config) -> bool:
+    """True if the file matches any [discovery].exclude glob (by full path or
+    bare name) — e.g. duplicate exports kept in the folder but not in the film."""
+    rel = str(p.relative_to(cfg.root)) if cfg.root in p.parents or p.parent == cfg.root else p.name
+    return any(fnmatch.fnmatch(p.name, g) or fnmatch.fnmatch(rel, g)
+               for g in cfg.discovery.exclude)
+
+
 def _discover(cfg: Config) -> list[Path]:
     seen: dict[str, Path] = {}
     for pat in cfg.discovery.patterns:
@@ -35,6 +44,8 @@ def _discover(cfg: Config) -> list[Path]:
                 continue
             # skip our own outputs and baked-upright copies
             if "_edit" in p.parts or p.stem.endswith("_upright"):
+                continue
+            if _excluded(p, cfg):
                 continue
             seen.setdefault(p.name, p)   # dedupe across overlapping globs
     return list(seen.values())
