@@ -249,7 +249,22 @@ def heal_clips(cfg: Config, clips: list[dict]) -> list[str]:
             raise SystemExit(f"[heal] {dst.name} still fails VideoToolbox decode")
         done.append(c["name"])
     if done:
-        cfg.decodable_json.unlink(missing_ok=True)        # re-check the fixes next run
+        # Record each just-verified _fixed copy as clean so the next `build`
+        # reuses this scan instead of hardware-decoding every clip again.
+        cache: dict = {}
+        if cfg.decodable_json.exists():
+            try:
+                cache = json.loads(cfg.decodable_json.read_text())
+            except json.JSONDecodeError:
+                cache = {}
+        for c in bad:
+            try:
+                stt = _fixed_path(c).stat()
+            except OSError:
+                continue
+            cache[str(_fixed_path(c))] = {"mtime": stt.st_mtime,
+                                          "size": stt.st_size, "nerr": 0}
+        cfg.decodable_json.write_text(json.dumps(cache, indent=2))
     elif not bad:
         print("[heal] nothing to repair — all clips already decode cleanly")
     return done
