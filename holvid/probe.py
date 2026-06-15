@@ -42,8 +42,8 @@ def _discover(cfg: Config) -> list[Path]:
         for p in cfg.root.glob(pat):
             if not p.is_file():
                 continue
-            # skip our own outputs and baked-upright copies
-            if "_edit" in p.parts or p.stem.endswith("_upright"):
+            # skip our own outputs, baked-upright copies, and repaired copies
+            if "_edit" in p.parts or p.stem.endswith(("_upright", "_fixed")):
                 continue
             if _excluded(p, cfg):
                 continue

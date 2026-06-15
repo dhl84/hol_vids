@@ -27,9 +27,13 @@ optional holvid.toml. Commands:
               `geo` field + fills empty `location` labels in review.json. Needs
               exiftool + reverse_geocoder. See [geo].
     upright   bake pillarboxed copies of rotated clips (run before build)
+    heal      hardware-decode-check every clip the way FCP does on export and
+              re-encode any it can't read into a clean <stem>_fixed.MP4 (a corrupt
+              GOP that software decode hides makes FCP's Share die silently). The
+              build points the asset at the _fixed copy automatically.
     build     assemble the titled FCPXML    -> _edit/<event>.fcpxml
               (+ chapters.txt / youtube_description.txt when labels exist)
-    all       probe + sheets + scaffold review (the prep before you fill it in)
+    all       probe + sheets + heal + scaffold review (the prep before review)
 
 Run with no command for usage. Example:
 
@@ -46,7 +50,7 @@ from . import probe, timeline
 from .config import Config
 
 COMMANDS = ("probe", "sheets", "review", "sanitize", "glitch", "pace",
-            "chapters", "geo", "upright", "build", "all")
+            "chapters", "geo", "upright", "heal", "build", "all")
 
 
 def _scaffold_review(cfg: Config, clips: list[dict]) -> None:
@@ -124,9 +128,12 @@ def main(argv: list[str] | None = None) -> int:
         geo.detect(cfg, _load_clips(cfg))
     elif cmd == "upright":
         timeline.bake_upright(cfg, _load_clips(cfg))
+    elif cmd == "heal":
+        timeline.heal_clips(cfg, _load_clips(cfg))
     elif cmd == "all":
         clips = probe.build_manifest(cfg)
         probe.make_sheets(cfg, clips)
+        timeline.heal_clips(cfg, clips)
         _scaffold_review(cfg, clips)
     elif cmd == "build":
         clips = _load_clips(cfg)

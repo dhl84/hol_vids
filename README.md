@@ -41,7 +41,7 @@ continuous-recording seams, cut-word list, …) is now a field in a per-trip
 
 ```
 probe ──> sheets ──> (you/Claude fill review.json) ──┐
-                                                      ├─ [sanitize] [glitch] [pace] [chapters] [geo] ──> [upright] ──> build
+                                                      ├─ [sanitize] [glitch] [pace] [chapters] [geo] ──> [upright] ──> [heal] ──> build
               (optional auto-analysis, any order) ────┘
 ```
 
@@ -65,7 +65,17 @@ probe ──> sheets ──> (you/Claude fill review.json) ──┐
      `geo` field + auto-filled `location` labels (city/landmark).
 5. **upright** — bake pillarboxed landscape copies of any vertical clips so FCP
    never has to rotate/conform. Auto-detected from rotation metadata.
-6. **build** — assemble `_edit/<event>.fcpxml`: titles, dissolves, auto-cuts,
+6. **heal** — hardware-decode-check every clip the way FCP does on export and
+   repair any it can't read. A clip with a corrupt GOP can software-decode fine
+   (so `ffprobe` and the contact sheets look clean) yet make FCP's **Share die
+   silently mid-export** — because FCP decodes with VideoToolbox. `heal`
+   re-encodes such clips through the software decoder (which conceals the bad
+   frames) into a clean `<stem>_fixed.MP4`, preserving timecode and frame grid;
+   `build` then points the asset at the `_fixed` copy automatically. Cached in
+   `_edit/decodable.json` so the scan runs once. **`build` refuses to emit an
+   FCPXML that references an undecodable clip**, so this can't bite you after a
+   long export again. Run automatically as part of `all`.
+7. **build** — assemble `_edit/<event>.fcpxml`: titles, dissolves, auto-cuts,
    review markers, audio mutes, speed-ramps, and chapter markers.
    DTD-validated. Also writes `_edit/chapters.txt` + `youtube_description.txt`
    — `M:SS Title` timestamps to paste into the YouTube description so viewers
@@ -80,6 +90,7 @@ uv run holvid "/Users/you/Downloads/Italy 2027" all
 # ... read the contact sheets, fill in _edit/review.json ...
 
 uv run holvid "/Users/you/Downloads/Italy 2027" upright   # if any vertical clips
+uv run holvid "/Users/you/Downloads/Italy 2027" heal      # repair any FCP can't decode
 uv run holvid "/Users/you/Downloads/Italy 2027" build
 ```
 
@@ -87,7 +98,12 @@ Then in Final Cut Pro: **File ▸ Import ▸ XML**. It creates a new project and
 touches nothing else. Review markers show in **Timeline Index ▸ Tags**.
 
 Individual commands: `probe`, `sheets`, `review`, `sanitize`, `glitch`, `pace`,
-`chapters`, `geo`, `upright`, `build`, `all`.
+`chapters`, `geo`, `upright`, `heal`, `build`, `all`.
+
+> **Silent FCP export failures?** If FCP's Share/Export quits with no error and a
+> half-written file, the usual cause is a single source clip whose bitstream
+> VideoToolbox (FCP's decoder) can't read. `heal` finds and repairs it; `build`
+> won't emit a timeline that contains one. See step 6 above.
 
 ## Optional auto-analysis
 
@@ -325,6 +341,12 @@ edit them by hand.
 - **Rotation.** Vertical clips are baked to a pillarboxed landscape
   `<stem>_upright.MP4` and treated as ordinary landscape — FCP's portrait+conform
   handling is unreliable.
+- **Hardware-decodability.** FCP decodes with VideoToolbox on export, so a clip
+  with a corrupt GOP that software decode silently conceals (clean `ffprobe`,
+  clean contact sheets) makes Share fail with no error. `heal` hardware-decodes
+  every clip, repairs the bad ones into `<stem>_fixed.MP4`, and `build` both
+  prefers the `_fixed` copy and refuses to emit a timeline containing a clip FCP
+  can't read.
 
 ## Files
 
@@ -341,7 +363,7 @@ edit them by hand.
 - `holvid/geo.py` — optional: GoPro GPS (exiftool/GPMF) → reverse-geocoded
   `geo` field + auto-filled `location` (offline city; opt-in online landmark)
 - `holvid/timeline.py` — FCPXML builder (titles, dissolves, cuts, audio mutes,
-  speed-ramps), rotation bake, DTD validation
+  speed-ramps), rotation bake, VideoToolbox decode-check + clip heal, DTD validation
 - `holvid/cli.py` — `holvid <project_dir> <command>`
 - `holvid.toml.example` — annotated config (real Paris values)
 - `TITLES.md` — the title-sequence logic, written up

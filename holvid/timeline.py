@@ -148,6 +148,113 @@ def _rotated_names(cfg: Config, clips: list[dict]) -> set[str]:
     return names
 
 
+# --- hardware-decodability (the thing FCP's Share actually needs) ----------
+
+def _fixed_path(c: dict) -> Path:
+    p = Path(c["path"])
+    return p.with_name(f"{p.stem}_fixed.MP4")
+
+
+def _vt_decode_errors(path: Path) -> int:
+    """Decode the FULL clip through the same VideoToolbox hardware decoder Final
+    Cut Pro uses on export; return the number of decode errors (0 = clean).
+
+    A clip can software-decode fine yet fail here: a corrupt GOP that ffmpeg's
+    error-concealment silently papers over makes the *hardware* decoder abort —
+    and that is exactly what makes FCP's Share die mid-export with no error
+    dialog. (The contact-sheet step only decodes sampled frames, so it can step
+    right over the bad GOP — this checks every frame.)"""
+    r = subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-hwaccel", "videotoolbox",
+         "-i", str(path), "-map", "0:v:0", "-f", "null", "-"],
+        capture_output=True, text=True)
+    return sum(1 for ln in r.stderr.splitlines() if ln.strip())
+
+
+def verify_decodable(cfg: Config, clips: list[dict]) -> list[dict]:
+    """Hardware-decode-check every source clip (the file the fcpxml will point
+    at, i.e. the _fixed/_upright copy if one exists) and flag any FCP could not
+    export. Cached by path+mtime+size so the expensive decode runs once. Returns
+    the clip dicts that still need repair; loud so a corrupt clip is caught here,
+    not after a 25-minute Share that dies silently."""
+    cache: dict = {}
+    if cfg.decodable_json.exists():
+        try:
+            cache = json.loads(cfg.decodable_json.read_text())
+        except json.JSONDecodeError:
+            cache = {}
+    rotated = _rotated_names(cfg, clips)
+    bad = []
+    for c in clips:
+        fixed = _fixed_path(c)
+        if fixed.exists():
+            src = fixed
+        elif c["name"] in rotated:
+            src = _upright_path(c)          # re-encoded copy; check what ships
+        else:
+            src = Path(c["path"])
+        try:
+            stt = src.stat()
+        except OSError:
+            continue
+        key = str(src)
+        ent = cache.get(key)
+        if (not ent or ent.get("mtime") != stt.st_mtime
+                or ent.get("size") != stt.st_size):
+            ent = {"mtime": stt.st_mtime, "size": stt.st_size,
+                   "nerr": _vt_decode_errors(src)}
+            cache[key] = ent
+        c["vt_errors"] = ent["nerr"]
+        if ent["nerr"] and not fixed.exists():
+            bad.append(c)
+    cfg.edit_dir.mkdir(parents=True, exist_ok=True)
+    cfg.decodable_json.write_text(json.dumps(cache, indent=2))
+    if bad:
+        print(f"[verify] {len(bad)} clip(s) FAIL VideoToolbox decode — FCP would "
+              f"silently fail to export these. Run `holvid <project> heal`:")
+        for c in bad:
+            print(f"[verify]   {c['name']}: {c['vt_errors']} undecodable frame(s)")
+    else:
+        print(f"[verify] all {len(clips)} clips hardware-decode cleanly")
+    return bad
+
+
+def heal_clips(cfg: Config, clips: list[dict]) -> list[str]:
+    """Repair clips Final Cut's hardware decoder chokes on. Re-encodes each
+    through the software decoder (which conceals the corrupt frames) into a clean
+    <stem>_fixed.MP4 that VideoToolbox can read, preserving the embedded timecode
+    and frame grid so the build's timing math is unchanged. The build then points
+    the asset at the _fixed copy automatically. Idempotent."""
+    bad = verify_decodable(cfg, clips)
+    done = []
+    for c in bad:
+        dst = _fixed_path(c)
+        if dst.exists():
+            print(f"[heal] {dst.name} exists, skip")
+            done.append(c["name"])
+            continue
+        print(f"[heal] repairing {c['name']} ({c['vt_errors']} bad frame(s)) "
+              f"-> {dst.name} …")
+        cmd = ["ffmpeg", "-y", "-v", "error", "-fflags", "+genpts",
+               "-i", c["path"], "-map", "0:v:0", "-map", "0:a:0?",
+               "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+               "-pix_fmt", "yuvj420p", "-color_range", "tv", "-colorspace",
+               "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+               "-r", f"{c['fps_num']}/{c['fps_den']}", "-c:a", "copy",
+               "-movflags", "+faststart"]
+        if c.get("timecode"):
+            cmd += ["-timecode", c["timecode"]]
+        subprocess.run(cmd + [str(dst)], check=True)
+        if _vt_decode_errors(dst):                       # the repair must hold
+            raise SystemExit(f"[heal] {dst.name} still fails VideoToolbox decode")
+        done.append(c["name"])
+    if done:
+        cfg.decodable_json.unlink(missing_ok=True)        # re-check the fixes next run
+    elif not bad:
+        print("[heal] nothing to repair — all clips already decode cleanly")
+    return done
+
+
 # --- dead-span / cut logic ------------------------------------------------
 
 def _is_obvious_dead(reason: str, cfg: Config) -> bool:
@@ -430,6 +537,15 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
     rclips = review.get("clips", {})
     movie_title = review.get("title") or cfg.title
     rotated = _rotated_names(cfg, clips)
+    # Never emit an fcpxml referencing a clip FCP's hardware decoder can't read —
+    # that is the silent-Share-failure trap. Cached, so it only decodes once.
+    bad = verify_decodable(cfg, clips)
+    if bad:
+        names = ", ".join(c["name"] for c in bad)
+        raise SystemExit(
+            f"[fcpxml] {len(bad)} clip(s) fail VideoToolbox decode ({names}) — "
+            f"FCP would silently fail to export. Run `holvid <project> heal` "
+            f"to repair them, then build again.")
     camera_time = set(cfg.timezone.camera_time_clips)
     seams = {tuple(p) for p in cfg.transitions.continuous_seams}
 
@@ -495,6 +611,10 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
             c["media_start_f"] = round(sf * c["scale"])
             c["tcfmt"] = "DF" if drop else "NDF"
             src_path = Path(c["path"])
+            fixed = _fixed_path(c)
+            if fixed.exists():        # corrupt original repaired by `heal`; the
+                src_path = fixed      # _fixed copy preserves timecode + frame grid
+                c["frames"] = _probe_frames(fixed) or c["frames"]
         c["frames_sq"] = round(c["frames"] * c["scale"])
         asset = ET.SubElement(resources, "asset", id=c["ref"],
                               name=Path(c["name"]).stem,

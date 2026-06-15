@@ -322,6 +322,12 @@ class Config:
         return self.edit_dir / "review.json"
 
     @property
+    def decodable_json(self) -> Path:
+        # cache of the VideoToolbox decode check, keyed by file path+mtime+size,
+        # so we hardware-decode each source clip once rather than every build.
+        return self.edit_dir / "decodable.json"
+
+    @property
     def gps_json(self) -> Path:
         return self.edit_dir / "gps.json"
 
