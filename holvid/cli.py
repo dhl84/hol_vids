@@ -22,6 +22,10 @@ optional holvid.toml. Commands:
               `chapter` labels into review.json. The build turns label changes
               into FCP chapter markers + YouTube `M:SS Title` timestamps
               (_edit/chapters.txt, youtube_description.txt). See [chapters].
+    highlight find the best moments: loud bursts on the soundtrack (laughter,
+              cheering — ffmpeg ebur128) confirmed + titled by a local vision
+              model -> writes `highlight` spans; the build adds a ★ marker at
+              each and writes _edit/highlights.txt. See [highlight].
     geo       read each clip's GoPro GPS (GPMF) with exiftool, reverse-geocode
               it (offline city/country; opt-in online landmark) -> writes a
               `geo` field + fills empty `location` labels in review.json. Needs
@@ -50,7 +54,7 @@ from . import probe, timeline
 from .config import Config
 
 COMMANDS = ("probe", "sheets", "review", "sanitize", "glitch", "pace",
-            "chapters", "geo", "upright", "heal", "build", "all")
+            "chapters", "highlight", "geo", "upright", "heal", "build", "all")
 
 
 def _scaffold_review(cfg: Config, clips: list[dict]) -> None:
@@ -120,6 +124,12 @@ def main(argv: list[str] | None = None) -> int:
             print("[chapters] [chapters].enabled is false in holvid.toml — "
                   "running anyway since you asked for it explicitly")
         chapters.detect(cfg, _load_clips(cfg))
+    elif cmd == "highlight":
+        from . import highlight
+        if not cfg.highlight.enabled:
+            print("[highlight] [highlight].enabled is false in holvid.toml — "
+                  "running anyway since you asked for it explicitly")
+        highlight.detect(cfg, _load_clips(cfg))
     elif cmd == "geo":
         from . import geo
         if not cfg.geo.enabled:
@@ -153,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
               f"{s.get('speedups', 0)} speed-ups "
               f"(~{s.get('speed_saved_s', 0):.0f}s shorter), "
               f"{s.get('chapters', 0)} chapters, "
+              f"{s.get('highlights', 0)} highlights, "
               f"~{s.get('music_s', 0):.0f}s music bed")
         print(f"[fcpxml] DTD {'valid' if ok else 'INVALID: ' + msg}")
         return 0 if ok else 1

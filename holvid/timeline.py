@@ -51,10 +51,13 @@ review.json schema:
         "mute": [[start_s, end_s, "reason"], ...],  # clip-local seconds: keep the
                                                     # picture, silence the audio
                                                     # (sensitive speech / arguments)
-        "speed": [[start_s, end_s, factor, "reason"], ...]  # clip-local seconds:
+        "speed": [[start_s, end_s, factor, "reason"], ...],  # clip-local seconds:
                                                     # keep the picture, play it
                                                     # `factor`x faster and muted
                                                     # (boring transit; see pace.py)
+        "highlight": [[start_s, end_s, "title"], ...]  # clip-local seconds: best
+                                                    # moments -> a ★ marker each +
+                                                    # highlights.txt (see highlight.py)
      }, ...
   },
   "title": "optional movie-title override"
@@ -512,6 +515,40 @@ def _music_files(cfg: Config) -> list[tuple[Path, float]]:
     return out
 
 
+# --- audio levelling --------------------------------------------------------
+
+def _clip_lufs(cfg: Config, clips: list[dict]) -> dict[str, float]:
+    """Integrated loudness (EBU R128) per clip, one ffmpeg loudnorm analysis
+    pass each, cached in _edit/loudness.json keyed name|size|mtime so a file is
+    measured once. Clips without measurable audio are omitted."""
+    cache = (json.loads(cfg.loudness_json.read_text())
+             if cfg.loudness_json.exists() else {})
+    out: dict[str, float] = {}
+    dirty = False
+    for c in clips:
+        st = Path(c["path"]).stat()
+        key = f"{c['name']}|{st.st_size}|{int(st.st_mtime)}"
+        if key not in cache:
+            print(f"[audio] measuring loudness of {c['name']} …")
+            r = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-nostats", "-i", c["path"], "-vn",
+                 "-af", "loudnorm=print_format=json", "-f", "null", "-"],
+                capture_output=True, text=True)
+            blocks = re.findall(r"\{[^{}]*\}", r.stderr)  # summary JSON prints
+            try:                                          # before ffmpeg's tail lines
+                cache[key] = float(json.loads(blocks[-1])["input_i"]) if blocks else None
+            except (ValueError, KeyError, json.JSONDecodeError):
+                cache[key] = None
+            dirty = True
+        v = cache[key]
+        if v is not None and v > -70:            # ≈ -inf = silent/no audio
+            out[c["name"]] = v
+    if dirty:
+        cfg.edit_dir.mkdir(parents=True, exist_ok=True)
+        cfg.loudness_json.write_text(json.dumps(cache, indent=1))
+    return out
+
+
 # --- closing card -----------------------------------------------------------
 
 def _closing_text(cfg: Config, dts: list[datetime]) -> str:
@@ -672,7 +709,17 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
     stats = {"cuts": 0, "cut_s": 0.0, "markers": 0, "segments": 0,
              "transitions": 0, "day_dips": 0, "mutes": 0, "mute_s": 0.0,
              "speedups": 0, "speed_src_s": 0.0, "speed_saved_s": 0.0,
-             "chapters": 0, "music_s": 0.0}
+             "chapters": 0, "highlights": 0, "music_s": 0.0}
+
+    # [audio].level: even out camera audio — per-clip integrated loudness ->
+    # a gentle per-segment adjust-volume toward target_lufs, clamped.
+    gains: dict[str, float] = {}
+    if cfg.audio.level:
+        for cname, lufs in _clip_lufs(cfg, clips).items():
+            g = max(-cfg.audio.max_adjust_db,
+                    min(cfg.audio.max_adjust_db, cfg.audio.target_lufs - lufs))
+            if abs(g) >= 0.5:                    # below that it's inaudible
+                gains[cname] = round(g, 1)
 
     # ---- pass 1: flatten clips into kept segments (obvious dead removed) ----
     segs = []
@@ -685,6 +732,11 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         # into kept segments rather than removing footage.
         mute_spans = [(max(0.0, float(m[0])), min(c["duration"], float(m[1])))
                       for m in rc.get("mute", []) if float(m[1]) > float(m[0])]
+        # highlight spans (best moments, from `highlight` or by hand): each is
+        # [s0, s1, title?] -> a ★ marker + a highlights.txt line at build.
+        hl_spans = [(max(0.0, float(h[0])), min(c["duration"], float(h[1])),
+                     (str(h[2]).strip() if len(h) > 2 and h[2] else "highlight"))
+                    for h in rc.get("highlight", []) if float(h[1]) > float(h[0])]
         # speed-up spans (boring transit/eating/driving, from `pace`): keep the
         # picture but play it faster and muted. Each entry is
         # [s0, s1, factor?, reason?]; a missing factor defaults to cfg.pace.factor.
@@ -726,7 +778,9 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                 "chapter": (rc.get("chapter") or "").strip(),
                 "clip_first": sidx == 0,
                 "marks": [(a, b, r) for (a, b, r) in marks if s0 <= a < s1],
+                "hls": [(a, b, l) for (a, b, l) in hl_spans if s0 <= a < s1],
                 "mutes": seg_mutes,
+                "gain_db": gains.get(c["name"], 0.0),
             })
 
     # ---- pass 2: decide dissolves + handle trims ----
@@ -800,6 +854,7 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
     cursor = 0
     prev_day = prev_loc = prev_chap = None
     chapter_pts = []          # (timeline seconds, label) at each chapter start
+    highlight_pts = []        # (timeline seconds, label) at each ★ highlight
     for i, s in enumerate(segs):
         is_first = (i == 0)
         is_last = (i == len(segs) - 1)
@@ -863,6 +918,8 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         # and is always honored on import (unlike srcEnable).
         if factor != 1.0:
             ET.SubElement(clip, "adjust-volume", amount="-96dB")
+        elif s["gain_db"]:                       # [audio].level loudness nudge
+            ET.SubElement(clip, "adjust-volume", amount=f"{s['gain_db']:g}dB")
 
         # ---- TITLE SEQUENCE LOGIC (only on a clip's first kept segment) ----
         if s["clip_first"]:
@@ -955,6 +1012,17 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                           value=f"REVIEW: {reason}"[:80])
             stats["markers"] += 1
 
+        # ---- HIGHLIGHTS (★ marker in source time + output-timeline second) ----
+        for h0, h1, label in s["hls"]:
+            ET.SubElement(clip, "marker", start=T.frames(s["msf"] + T.secs(h0)),
+                          duration=T.frames(max(1, T.secs(h1) - T.secs(h0))),
+                          value=f"★ {label}"[:80])
+            off_f = max(0, s["msf"] + T.secs(h0) - vin)   # frames into segment
+            if factor != 1.0:
+                off_f = round(off_f / factor)
+            highlight_pts.append(((cursor + min(off_f, out_dur)) * T.d / T.n, label))
+            stats["highlights"] += 1
+
         # ---- SENSITIVE-AUDIO MUTING (no split; picture is untouched) ----
         # DTD content model puts audio-channel-source after anchor items/markers.
         # `mute` start/duration are in source media time, the same coordinate as
@@ -976,6 +1044,13 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                                   cfg.chapters.min_chapter_s)
     stats["chapters"] = len(chapters)
     _write_chapter_files(cfg, chapters, movie_title)
+    if highlight_pts:
+        highlight_pts.sort()
+        cfg.highlights_txt.write_text(
+            "".join(f"{_yt_time(t)} ★ {label}\n" for t, label in highlight_pts),
+            encoding="utf-8")
+        print(f"[highlight] {len(highlight_pts)} ★ marker(s) -> "
+              f"{cfg.highlights_txt.name}")
     build.stats = stats  # type: ignore[attr-defined]
 
     _indent(fcpxml)

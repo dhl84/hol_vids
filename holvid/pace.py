@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import subprocess
+from pathlib import Path
 
 from .config import Config
 from .sanitize import ollama_generate
@@ -47,7 +48,7 @@ def _sample_frame(cfg: Config, path: str, t: float) -> bytes | None:
     return r.stdout or None
 
 
-def _classify_frame(cfg: Config, prompt: str, img: bytes) -> bool:
+def _classify_frame(cfg: Config, prompt: str, img: bytes) -> bool | None:
     b64 = base64.b64encode(img).decode("ascii")
     try:
         resp = ollama_generate(cfg.pace.ollama_url, cfg.pace.vision_model,
@@ -56,7 +57,7 @@ def _classify_frame(cfg: Config, prompt: str, img: bytes) -> bool:
         return bool(json.loads(resp).get("boring"))
     except Exception as e:                          # network / model / JSON error
         print(f"  [warn] vision classify failed: {e}")
-        return False                                # default: keep normal speed
+        return None                                 # treated as not-boring; NOT cached
 
 
 def detect(cfg: Config, clips: list[dict]) -> dict:
@@ -65,20 +66,38 @@ def detect(cfg: Config, clips: list[dict]) -> dict:
     p = cfg.pace
     prompt = VISION_PROMPT.format(
         categories="\n".join(f"- {c}" for c in p.categories))
+    # per-frame verdicts are cached so a re-run (or a tweak elsewhere) doesn't
+    # re-ask Ollama thousands of questions. Keyed by file identity + model +
+    # sample time. ponytail: [pace].categories isn't in the key — delete
+    # _edit/pace_cache.json after changing them.
+    cache = (json.loads(cfg.pace_cache_json.read_text())
+             if cfg.pace_cache_json.exists() else {})
+    cache_hits = dirty = 0
     speeds: dict[str, list] = {}
     total_saved = 0.0
     for c in clips:
         dur = c["duration"]
         if dur < p.min_span_s:
             continue
+        st = Path(c["path"]).stat()
+        ckey = f"{c['name']}|{st.st_size}|{int(st.st_mtime)}|{p.vision_model}"
         # sample at the centre of each sample_s window; each sample stands for its
         # whole [t-half, t+half] window.
         half = p.sample_s / 2.0
         times, flags = [], []
         t = half
         while t < dur:
-            img = _sample_frame(cfg, c["path"], t)
-            flags.append(bool(img) and _classify_frame(cfg, prompt, img))
+            key = f"{ckey}|{t:.1f}"
+            if key in cache:
+                flag = cache[key]
+                cache_hits += 1
+            else:
+                img = _sample_frame(cfg, c["path"], t)
+                flag = _classify_frame(cfg, prompt, img) if img else False
+                if flag is not None:             # a model error is transient:
+                    cache[key] = flag            # don't persist it as a verdict
+                    dirty += 1
+            flags.append(bool(flag))
             times.append(t)
             t += p.sample_s
         # boring sample window -> [t-half, t+half]; collect, merge, threshold.
@@ -99,9 +118,13 @@ def detect(cfg: Config, clips: list[dict]) -> dict:
             total_saved += saved
             print(f"[pace] {c['name']}: {len(spans)} boring span(s) -> "
                   f"{p.factor:g}x (~{saved:.0f}s shorter)")
+    if dirty:
+        cfg.edit_dir.mkdir(parents=True, exist_ok=True)
+        cfg.pace_cache_json.write_text(json.dumps(cache))
     _merge_into_review(cfg, speeds)
     print(f"[pace] sped up boring footage in {len(speeds)} clip(s); "
-          f"~{total_saved:.0f}s shorter overall -> review.json")
+          f"~{total_saved:.0f}s shorter overall -> review.json "
+          f"({cache_hits} frame verdict(s) from cache, {dirty} new)")
     return speeds
 
 

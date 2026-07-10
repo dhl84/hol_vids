@@ -41,12 +41,14 @@ continuous-recording seams, cut-word list, …) is now a field in a per-trip
 
 ```
 probe ──> sheets ──> (you/Claude fill review.json) ──┐
-                                                      ├─ [sanitize] [glitch] [pace] [chapters] [geo] ──> [upright] ──> [heal] ──> build
+                                                      ├─ [sanitize] [glitch] [pace] [chapters] [highlight] [geo] ──> [upright] ──> [heal] ──> build
               (optional auto-analysis, any order) ────┘
 ```
 
 1. **probe** — scan the footage, read each clip's wall-clock time, fps, duration
-   and embedded timecode → `_edit/clips.json` (sorted chronologically).
+   and embedded timecode → `_edit/clips.json` (sorted chronologically). Warns
+   about variable-frame-rate clips (typical of phones) — the frame math assumes
+   a constant rate, so conform those first or expect drift.
 2. **sheets** — sample a frame every few seconds and tile them into contact
    sheets → `_edit/sheets/`. These are what you (or Claude) read to know what's
    in each clip. Tile position encodes the timecode exactly (no burned-in text
@@ -61,6 +63,8 @@ probe ──> sheets ──> (you/Claude fill review.json) ──┐
    - **pace** — speed up boring transit (walking/driving/eating), muted.
    - **chapters** — name each clip's event with a vision model → `chapter`
      labels (YouTube chapter titles).
+   - **highlight** — find the best moments (laughter, cheering — loud audio
+     bursts confirmed by a vision model) → `highlight` spans (★ markers).
    - **geo** — read each clip's GoPro GPS (GPMF) and reverse-geocode it →
      `geo` field + auto-filled `location` labels (city/landmark).
 5. **upright** — bake pillarboxed landscape copies of any vertical clips so FCP
@@ -98,7 +102,7 @@ Then in Final Cut Pro: **File ▸ Import ▸ XML**. It creates a new project and
 touches nothing else. Review markers show in **Timeline Index ▸ Tags**.
 
 Individual commands: `probe`, `sheets`, `review`, `sanitize`, `glitch`, `pace`,
-`chapters`, `geo`, `upright`, `heal`, `build`, `all`.
+`chapters`, `highlight`, `geo`, `upright`, `heal`, `build`, `all`.
 
 > **Silent FCP export failures?** If FCP's Share/Export quits with no error and a
 > half-written file, the usual cause is a single source clip whose bitstream
@@ -107,8 +111,8 @@ Individual commands: `probe`, `sheets`, `review`, `sanitize`, `glitch`, `pace`,
 
 ## Optional auto-analysis
 
-Five optional steps look at the footage and write proposals into `review.json`
-(`mute` / `dead` / `speed` / `chapter` / `geo`). They're independent — run any subset, in any order —
+Six optional steps look at the footage and write proposals into `review.json`
+(`mute` / `dead` / `speed` / `chapter` / `highlight` / `geo`). They're independent — run any subset, in any order —
 and all local. Re-run freely: muting and speed-ramps never move a frame, so you
 can tweak the JSON by hand and rebuild. Each is off by default; enable in
 `holvid.toml` or just run the command (it runs when invoked explicitly).
@@ -170,6 +174,10 @@ queueing). Boring runs ≥ `min_span_s` become `speed` spans. The build keeps th
 picture but plays them `factor`× faster and **muted**, via a DTD `<timeMap>`
 retime + volume to -96dB — no footage removed.
 
+Per-frame verdicts are cached in `_edit/pace_cache.json` (keyed by file, model
+and sample time), so re-running after a tweak skips the thousands of Ollama
+calls already answered. Delete the cache after changing `[pace].categories`.
+
 ### `chapters` — name YouTube chapters (local vision model)
 
 ```sh
@@ -181,7 +189,10 @@ Samples a few frames from every clip and asks a **local multimodal model** for a
 short viewer-facing event title ("Eiffel Tower at Night", "Breakfast at the
 Hotel"), telling it the previous clip's chapter so consecutive clips at the same
 event share one label (a new day always starts fresh). Writes a `chapter` field
-per clip into `review.json` — edit the labels freely and rebuild.
+per clip into `review.json` — edit the labels freely and rebuild. If `sanitize`
+has already transcribed the trip, what people said in each clip is fed to the
+model as a hint — "look, the palace!" often names the event better than the
+picture does.
 
 The **build** then opens a chapter wherever the label changes (falling back to
 the `location` label, then a day divider, so you get chapters even without this
@@ -197,6 +208,27 @@ chapter bar. Its rules are applied automatically: the first chapter is forced
 to `0:00`, a chapter shorter than `[chapters].min_chapter_s` (default 10 s,
 YouTube's minimum) loses its slot to the next label, and the build warns if
 fewer than 3 chapters remain (YouTube's minimum for the chapter bar).
+
+### `highlight` — find the best moments (audio excitement + local vision model)
+
+```sh
+ollama pull gemma4                         # any multimodal model; set [highlight].vision_model
+uv run holvid "/Users/you/Downloads/Korea 2026" highlight
+```
+
+Family highlights announce themselves on the soundtrack: laughter, cheering, a
+shout, a splash. ffmpeg measures each clip's momentary loudness (EBU R128,
+10 Hz) and finds sustained bursts ≥ `threshold_db` above the **clip's own
+median** (so a loud street doesn't drown the signal); a **local vision model**
+then looks at the frame under the loudest instant, confirms it's a real moment
+(not traffic or wind) and gives it a short title. The `top_per_clip` loudest
+survivors become `highlight` spans in `review.json`.
+
+The build adds a **★ marker** at each (jump between them in FCP's Timeline
+Index ▸ Tags) and writes `_edit/highlights.txt` — `M:SS ★ Title` lines on the
+output timeline, ready for a "best bits" list in the YouTube description. If
+Ollama is unreachable the bursts are kept with a generic "loud moment" label —
+the audio signal alone is a good treasure map.
 
 ### `geo` — place names from GoPro GPS (exiftool + reverse geocoding)
 
@@ -264,6 +296,10 @@ rotation, generic title). Key sections:
   categories)
 - `[chapters]` — YouTube-chapter naming (`vision_model`, `frames_per_clip`,
   `min_chapter_s`, `day_format`)
+- `[highlight]` — best-moment ★ markers (`vision_model`, `threshold_db`,
+  `top_per_clip`)
+- `[audio]` — camera-audio levelling (`level`, `target_lufs`, `max_adjust_db`);
+  off by default so builds stay byte-identical
 - `[geo]` — GoPro-GPS place names (`fill_empty_location`, `day_includes_city`,
   `online` + Nominatim settings for opt-in landmark lookup)
 
@@ -279,6 +315,7 @@ rotation, generic title). Key sections:
       "dead":  [[12.0, 14.8, "near-black"]],       // cut footage (cut-word reason)
       "mute":  [[31.5, 35.0, "argument"]],         // keep picture, silence audio
       "speed": [[40.0, 70.0, 2.0, "boring transit"]], // keep picture, 2x + muted
+      "highlight": [[52.0, 59.5, "Cheering at the Fountain"]], // ★ marker + highlights.txt
       "geo":   {"lat": 48.8809, "lon": 2.3553, "city": "Paris", "country": "France",
                 "place": "Gare du Nord"}           // from GoPro GPS (geo step)
     }
@@ -329,6 +366,13 @@ edit them by hand.
   dissolve handles, and speed-ramps. After the spine is laid out, YouTube's
   rules are applied (first chapter at 0:00, ≥ 10 s each) and the
   `chapters.txt` / `youtube_description.txt` files are written.
+- **Highlights & audio levelling.** A `highlight` span becomes a ★ marker
+  (Timeline Index ▸ Tags) plus an output-timeline `M:SS ★ Title` line in
+  `_edit/highlights.txt`. With `[audio].level = true`, each clip's integrated
+  loudness (EBU R128, measured once and cached in `_edit/loudness.json`) nudges
+  its segments toward `target_lufs` via a plain `<adjust-volume>`, clamped to
+  ±`max_adjust_db` — so the edit doesn't jump between whisper-quiet interiors
+  and roaring streets. Off by default; builds stay byte-identical unless enabled.
 - **Timecode correctness.** DJI clips carry drop-frame embedded timecodes; each
   spine clip's `start`/`tcFormat` is set from them or FCP rejects the edit ("no
   respective media"). Media in/out is clamped to the asset's real frame range so
@@ -361,6 +405,8 @@ edit them by hand.
   `speed` spans
 - `holvid/chapters.py` — optional: local vision model names each clip's event →
   `chapter` labels (YouTube chapters)
+- `holvid/highlight.py` — optional: loud audio bursts (EBU R128) confirmed by a
+  local vision model → `highlight` spans (★ markers + highlights.txt)
 - `holvid/geo.py` — optional: GoPro GPS (exiftool/GPMF) → reverse-geocoded
   `geo` field + auto-filled `location` (offline city; opt-in online landmark)
 - `holvid/timeline.py` — FCPXML builder (titles, dissolves, cuts, audio mutes,

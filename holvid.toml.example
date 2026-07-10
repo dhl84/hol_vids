@@ -152,7 +152,8 @@ pad_s         = 0.1     # widen each cut by this on both sides
 # + a vision model pulled into Ollama (e.g. `ollama pull gemma4`).
 [pace]
 enabled      = false
-vision_model = "gemma4:latest"   # any multimodal Ollama model
+vision_model = "gemma4:latest"   # any multimodal Ollama model (qwen2.5-vl:7b
+                                 # and minicpm-v are strong current picks)
 ollama_url   = "http://localhost:11434/api/generate"
 sample_s     = 5.0      # seconds between sampled/classified frames
 frame_px     = 320      # downscale sampled frames to this width
@@ -178,12 +179,46 @@ categories = [
 # YouTube description. `enabled` gates only the vision naming step.
 [chapters]
 enabled         = false
-vision_model    = "gemma4:latest"   # any multimodal Ollama model
+vision_model    = "gemma4:latest"   # any multimodal Ollama model (qwen2.5-vl:7b
+                                    # and minicpm-v are strong current picks)
 ollama_url      = "http://localhost:11434/api/generate"
 frames_per_clip = 3        # frames sampled per clip for the model
 frame_px        = 320      # downscale sampled frames to this width
 min_chapter_s   = 10.0     # YouTube's minimum; shorter chapters lose their slot
 day_format      = "%A %-d %B"  # chapter label for a day with no chapter/location
+
+# --- best-moment markers (optional `highlight` step) -----------------------
+# Family highlights announce themselves on the soundtrack: laughter, cheering,
+# a shout, a splash. ffmpeg measures each clip's momentary loudness (EBU R128)
+# and finds sustained bursts well above the clip's own baseline; a local vision
+# model looks at the frame under the loudest instant to confirm the moment and
+# give it a short title. Writes `highlight` spans into review.json; the build
+# adds a ★ marker at each (Timeline Index ▸ Tags) + _edit/highlights.txt with
+# `M:SS ★ Title` lines for the YouTube description. If Ollama is unreachable
+# the bursts are kept with a generic "loud moment" label.
+[highlight]
+enabled       = false
+vision_model  = "gemma4:latest"   # any multimodal Ollama model; qwen2.5-vl:7b
+                                  # and minicpm-v are strong current picks
+ollama_url    = "http://localhost:11434/api/generate"
+threshold_db  = 8.0     # burst = this far above the clip's median loudness
+min_peak_lufs = -35.0   # …and at least this loud absolutely (kills rustle
+                        # "bursts" in near-silent clips)
+min_span_s    = 1.0     # sustained at least this long to count
+merge_gap_s   = 4.0     # merge bursts separated by less than this
+pad_s         = 2.0     # widen each highlight span on both sides
+top_per_clip  = 3       # keep at most the N loudest bursts per clip
+
+# --- camera-audio levelling (build-time, off by default) --------------------
+# Vacation clips jump between whisper-quiet interiors and roaring streets. With
+# level = true the build measures each clip's integrated loudness once (EBU
+# R128, cached in _edit/loudness.json) and nudges each segment toward
+# target_lufs with a plain <adjust-volume>, clamped to ±max_adjust_db. Off by
+# default so builds stay byte-identical unless you opt in.
+[audio]
+level         = false
+target_lufs   = -16.0   # bring each clip toward this (YouTube plays at ≈ -14)
+max_adjust_db = 6.0     # never boost or cut a clip by more than this
 
 # --- place names from GoPro GPS (optional `geo` step) ---------------------
 # Reads each clip's GoPro GPS (GPMF telemetry) with exiftool, reverse-geocodes

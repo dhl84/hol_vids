@@ -76,7 +76,7 @@ def _datetime_from(path: Path, cfg: Config, creation_time: str) -> tuple[datetim
 def probe_one(path: Path, cfg: Config) -> dict:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height,r_frame_rate,nb_frames",
+         "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate,nb_frames",
          "-show_entries", "stream_tags=timecode",
          "-show_entries", "format=duration:format_tags=creation_time,timecode",
          "-of", "json", str(path)],
@@ -85,6 +85,13 @@ def probe_one(path: Path, cfg: Config) -> dict:
     st = d["streams"][0]
     fmt = d["format"]
     num, den = (int(x) for x in st["r_frame_rate"].split("/"))
+    # variable frame rate (typical of phone footage): the nominal and average
+    # rates diverge, so frame-count timing silently drifts. Flagged + warned.
+    try:
+        an, ad = (int(x) for x in st.get("avg_frame_rate", "0/0").split("/"))
+        vfr = ad > 0 and abs(num / den - an / ad) > 0.01 * (num / den)
+    except (ValueError, ZeroDivisionError):
+        vfr = False
     duration = float(fmt["duration"])
     frames = (int(st["nb_frames"]) if str(st.get("nb_frames", "")).isdigit()
               else round(duration * num / den))
@@ -103,6 +110,7 @@ def probe_one(path: Path, cfg: Config) -> dict:
         "width": st["width"], "height": st["height"],
         "timecode": tc,
         "creation_time": creation_time,
+        "vfr": vfr,
     }
 
 
@@ -119,6 +127,13 @@ def build_manifest(cfg: Config) -> list[dict]:
     h, m = int(total // 3600), int((total % 3600) // 60)
     print(f"[probe] {len(clips)} clips, {h}h{m:02d}m "  # floor, not round (0.76h is 0h46m, not 1h46m)
           f"-> {cfg.clips_json}")
+    vfr = [c["name"] for c in clips if c.get("vfr")]
+    if vfr:
+        print(f"[probe] WARNING: {len(vfr)} variable-frame-rate clip(s) — the "
+              f"frame math assumes a constant rate, so cuts/titles can drift: "
+              f"{', '.join(vfr)}\n"
+              f"        conform first, e.g.  ffmpeg -i IN.MP4 -fps_mode cfr "
+              f"-r <fps> -c:a copy IN_cfr.MP4")
     return clips
 
 

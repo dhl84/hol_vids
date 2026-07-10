@@ -25,7 +25,7 @@ import subprocess
 from datetime import datetime, timedelta
 
 from .config import Config
-from .sanitize import ollama_generate
+from .sanitize import _transcripts_path, ollama_generate
 
 CHAPTER_PROMPT = """\
 You are indexing a personal holiday video into named chapters (like YouTube \
@@ -72,7 +72,8 @@ def _clean(title) -> str:
     return t[:60]
 
 
-def _name_clip(cfg: Config, c: dict, prev_label: str, loc: str) -> str:
+def _name_clip(cfg: Config, c: dict, prev_label: str, loc: str,
+               speech: str = "") -> str:
     """One vision call -> a chapter label for this clip ('' on any failure)."""
     imgs = _sample_frames(cfg, c)
     if not imgs:
@@ -83,6 +84,8 @@ def _name_clip(cfg: Config, c: dict, prev_label: str, loc: str) -> str:
         hints.append(f"It was shot around {ldt.strftime('%H:%M on %A %-d %B')}.")
     if loc:
         hints.append(f'The clip\'s location label is "{loc}".')
+    if speech:
+        hints.append(f'People can be heard saying: "{speech}".')
     prompt = CHAPTER_PROMPT.format(
         n=len(imgs),
         context=(" " + " ".join(hints)) if hints else "",
@@ -108,6 +111,10 @@ def detect(cfg: Config, clips: list[dict]) -> dict:
     review = (json.loads(cfg.review_json.read_text())
               if cfg.review_json.exists() else {"clips": {}})
     rclips = review.get("clips", {})
+    # what people said is often the best clue to the event ("look, the palace!").
+    # Free when `sanitize` has already transcribed; absent otherwise.
+    tpath = _transcripts_path(cfg)
+    transcripts = json.loads(tpath.read_text()) if tpath.exists() else {}
     labels: dict[str, str] = {}
     prev_label, prev_day, runs = "", None, 0
     for c in clips:
@@ -116,7 +123,9 @@ def detect(cfg: Config, clips: list[dict]) -> dict:
             prev_label = ""                      # a new day never continues a chapter
             prev_day = day
         loc = (rclips.get(c["name"], {}).get("location") or "").strip()
-        label = _name_clip(cfg, c, prev_label, loc) or loc
+        lines = (transcripts.get(c["name"]) or {}).get("lines", [])
+        speech = " ".join(ln["text"] for ln in lines).strip()[:200]
+        label = _name_clip(cfg, c, prev_label, loc, speech) or loc
         if label.lower() == prev_label.lower():
             label = prev_label                   # normalise capitalisation drift
         if label:

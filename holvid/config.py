@@ -179,6 +179,52 @@ class Pace:
 
 
 @dataclass
+class Highlight:
+    """Find the best moments (laughter, cheering, a shout, a splash) so they're
+    easy to jump to in FCP and to list in the YouTube description.
+
+    Family highlights announce themselves on the soundtrack. This measures each
+    clip's momentary loudness (ffmpeg ebur128, 10 Hz), finds sustained bursts
+    well above the clip's own baseline, then asks a local multimodal Ollama
+    model to confirm the moment and give it a short title. Writes `highlight`
+    spans into review.json; the build emits a ★ marker at each one plus
+    _edit/highlights.txt (`M:SS ★ Title` lines).
+
+    If Ollama is unreachable the bursts are kept with a generic "loud moment"
+    label — the audio signal alone is still a good treasure map. No extra
+    Python deps: ffmpeg + the stdlib Ollama call.
+    """
+    enabled: bool = False
+    vision_model: str = "gemma4:latest"   # multimodal Ollama model (confirm + title)
+    ollama_url: str = "http://localhost:11434/api/generate"
+    threshold_db: float = 8.0        # burst = momentary loudness this far above
+                                     # the clip's median loudness
+    min_peak_lufs: float = -35.0     # …and at least this loud absolutely (so a
+                                     # rustle in a near-silent clip doesn't count)
+    min_span_s: float = 1.0          # sustained at least this long to count
+    merge_gap_s: float = 4.0         # merge bursts separated by less than this
+    pad_s: float = 2.0               # widen each highlight span on both sides
+    top_per_clip: int = 3            # keep at most the N loudest bursts per clip
+    frame_px: int = 320              # downscale the sampled frame for the model
+
+
+@dataclass
+class Audio:
+    """Even out camera-audio loudness between clips (EBU R128).
+
+    Vacation clips jump between whisper-quiet interiors and roaring streets.
+    With `level = true` the build measures each clip's integrated loudness once
+    (ffmpeg loudnorm analysis, cached in _edit/loudness.json) and nudges each
+    segment's volume toward `target_lufs` with a plain FCPXML <adjust-volume>
+    (clamped to ±max_adjust_db, so a boost never drags up the noise floor too
+    far). Off by default: builds stay byte-identical unless you opt in.
+    """
+    level: bool = False
+    target_lufs: float = -16.0       # bring each clip toward this (YouTube ≈ -14)
+    max_adjust_db: float = 6.0       # never boost or cut a clip by more than this
+
+
+@dataclass
 class Chapters:
     """Index the movie into named chapters (YouTube-style).
 
@@ -304,6 +350,8 @@ class Config:
     glitch: Glitch = field(default_factory=Glitch)
     pace: Pace = field(default_factory=Pace)
     chapters: Chapters = field(default_factory=Chapters)
+    highlight: Highlight = field(default_factory=Highlight)
+    audio: Audio = field(default_factory=Audio)
 
     # --- derived paths ---
     @property
@@ -339,6 +387,22 @@ class Config:
     @property
     def chapters_txt(self) -> Path:
         return self.edit_dir / "chapters.txt"
+
+    @property
+    def highlights_txt(self) -> Path:
+        return self.edit_dir / "highlights.txt"
+
+    @property
+    def loudness_json(self) -> Path:
+        # cache of per-clip integrated loudness (EBU R128), keyed by
+        # name|size|mtime, so [audio].level measures each file once.
+        return self.edit_dir / "loudness.json"
+
+    @property
+    def pace_cache_json(self) -> Path:
+        # cache of per-frame boring/not verdicts, keyed by
+        # name|size|mtime|model|t, so re-running `pace` skips Ollama calls.
+        return self.edit_dir / "pace_cache.json"
 
     @property
     def youtube_description(self) -> Path:
@@ -378,7 +442,8 @@ def _from_dict(klass, data: dict):
     nested = {"discovery": Discovery, "timezone": Timezone, "titles": Titles,
               "transitions": Transitions, "music": Music, "geo": Geo,
               "cuts": Cuts, "sheets": Sheets, "sanitize": Sanitize,
-              "glitch": Glitch, "pace": Pace, "chapters": Chapters}
+              "glitch": Glitch, "pace": Pace, "chapters": Chapters,
+              "highlight": Highlight, "audio": Audio}
     for name, sub in nested.items():
         if name in data and isinstance(data[name], dict):
             kwargs[name] = _from_dict(sub, data[name])
