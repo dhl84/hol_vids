@@ -247,9 +247,10 @@ rotation, generic title). Key sections:
 - `[titles]` — fonts, sizes, durations, title fade (`fade_s`), day-divider
   toggle (`day_dividers`), optional closing card (`closing_s` / `closing_text`),
   date/stamp `strftime` formats (the location stamp includes the year by default)
-- `[transitions]` — dissolve length, day dip-to-black (`day_dip_s`), start/end
-  fades, `continuous_seams` (clip pairs that are one recording split across
-  files → hard join)
+- `[transitions]` — dissolve length, day dip-to-black (`day_dip_s`), a dip on
+  location-label change (`location_dip_s`, for single-event edits like a
+  concert where each label is a song), start/end fades, `continuous_seams`
+  (clip pairs that are one recording split across files → hard join)
 - `[music]` — optional background-music bed (`files`, `volume_db`, fades)
 - `[cuts]` — `cut_words` (a dead span mentioning one is removed) vs `keep_words`
   / short spans → left as review markers

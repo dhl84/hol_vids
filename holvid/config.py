@@ -67,6 +67,11 @@ class Transitions:
     dissolve_s: float = 1.0     # scene-boundary cross-dissolve length
     day_dip_s: float = 1.5      # day boundaries dip through black for this long in
                                 # total (the "time has passed" cue; 0 = plain dissolve)
+    location_dip_s: float = 0.0  # dip through black when the location label changes
+                                # at a clip boundary (0 = off). For single-event edits
+                                # like a concert where each location label is a song:
+                                # gives a "dip to black between songs" instead of a
+                                # cross-dissolve. day_dip still applies across days.
     start_fade_s: float = 1.0   # gentle fade up at the very start (0 to disable)
     end_fade_s: float = 2.0     # fade to black at the very end (0 to disable)
     # clip pairs that are ONE continuous recording split across files -> hard join

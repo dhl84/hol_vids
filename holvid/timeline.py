@@ -758,6 +758,21 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
             a["fade_out_f"] = dip_f
             b["fade_in_f"] = dip_f
             stats["day_dips"] += 1
+    # Location (e.g. song) boundaries can dip through black too — for a single-event
+    # edit like a concert where each location label is a song title, this gives a
+    # "dip between songs" instead of a cross-dissolve. Fires where a clip's first
+    # segment carries a different (non-empty) location than the previous segment.
+    if cfg.transitions.location_dip_s > 0:
+        ldip_f = max(2, T.secs(cfg.transitions.location_dip_s / 2))
+        for i in range(len(segs) - 1):
+            a, b = segs[i], segs[i + 1]
+            if (a["cname"], b["cname"]) in seams or not b["clip_first"]:
+                continue
+            if b["loc"] and b["loc"] != a["loc"]:
+                trans[i] = False
+                a["fade_out_f"] = max(a["fade_out_f"], ldip_f)
+                b["fade_in_f"] = max(b["fade_in_f"], ldip_f)
+                stats["day_dips"] += 1
     for i, s in enumerate(segs):
         s["lh"] = i > 0 and trans[i - 1]
         s["rh"] = i < len(segs) - 1 and trans[i]
