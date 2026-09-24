@@ -8,6 +8,10 @@ optional holvid.toml. Commands:
     probe     scan + probe clips            -> _edit/clips.json
     sheets    contact sheets for review     -> _edit/sheets/, sheets_index.json
               (implies probe)
+    stills    fold the folder's photos into the film: group them by capture time
+              and render each group to a Ken Burns montage clip stamped with that
+              time, so `probe` places it chronologically among the video. Needs
+              ffmpeg (+ macOS `sips` for HEIC). Re-run `probe` after. See [stills].
     review    scaffold an empty review.json from the manifest (won't overwrite)
     sanitize  transcribe audio (any language) + flag sensitive/controversial
               speech AND arguments with a local LLM -> writes `mute` spans into
@@ -53,7 +57,7 @@ from pathlib import Path
 from . import probe, timeline
 from .config import Config
 
-COMMANDS = ("probe", "sheets", "review", "sanitize", "glitch", "pace",
+COMMANDS = ("probe", "sheets", "stills", "review", "sanitize", "glitch", "pace",
             "chapters", "highlight", "geo", "upright", "heal", "build", "all")
 
 
@@ -98,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
         probe.build_manifest(cfg)
     elif cmd == "sheets":
         probe.make_sheets(cfg, probe.build_manifest(cfg))
+    elif cmd == "stills":
+        from . import stills
+        stills.render(cfg, _load_clips(cfg))
     elif cmd == "review":
         _scaffold_review(cfg, _load_clips(cfg))
     elif cmd == "sanitize":
@@ -162,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
               f"{s.get('mutes', 0)} muted spans (~{s.get('mute_s', 0):.0f}s), "
               f"{s.get('speedups', 0)} speed-ups "
               f"(~{s.get('speed_saved_s', 0):.0f}s shorter), "
+              f"{s.get('subs', 0)} subtitles, "
               f"{s.get('chapters', 0)} chapters, "
               f"{s.get('highlights', 0)} highlights, "
               f"~{s.get('music_s', 0):.0f}s music bed")

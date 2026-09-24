@@ -51,6 +51,9 @@ review.json schema:
         "mute": [[start_s, end_s, "reason"], ...],  # clip-local seconds: keep the
                                                     # picture, silence the audio
                                                     # (sensitive speech / arguments)
+        "subs": [[start_s, end_s, "text"], ...],    # clip-local seconds: burned-in
+                                                    # subtitle (e.g. the safari
+                                                    # guide's commentary)
         "speed": [[start_s, end_s, factor, "reason"], ...],  # clip-local seconds:
                                                     # keep the picture, play it
                                                     # `factor`x faster and muted
@@ -128,14 +131,25 @@ def bake_upright(cfg: Config, clips: list[dict]) -> list[str]:
             done.append(c["name"])
             continue
         w, h = c["width"], c["height"]
-        # transpose to portrait content, then pad back into a landscape WxH frame.
-        vf = (f"transpose=1,scale=-2:{h},"
+        # ffmpeg >= 5 auto-applies the rotation matrix on decode, so the frames
+        # arrive already upright-portrait — just pad into a landscape WxH frame
+        # (a manual transpose on top would double-rotate).
+        vf = (f"scale=-2:{h},"
               f"pad={w}:{h}:(ow-iw)/2:0:black,setsar=1")
         print(f"[upright] baking {dst.name} …")
-        subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", c["path"], "-vf", vf,
-             "-c:v", "hevc_videotoolbox", "-q:v", "55", "-c:a", "copy", str(dst)],
-            check=True)
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-i", c["path"], "-vf", vf,
+                 "-c:v", "hevc_videotoolbox", "-q:v", "55", "-c:a", "copy", str(dst)],
+                check=True)
+        except subprocess.CalledProcessError:
+            # hardware session can be refused (10-bit HDR sources, busy encoder);
+            # software fallback only accepts bitrate mode, not -q:v
+            subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-i", c["path"], "-vf", vf,
+                 "-c:v", "hevc_videotoolbox", "-allow_sw", "1", "-b:v", "45M",
+                 "-c:a", "copy", str(dst)],
+                check=True)
         done.append(c["name"])
     if not done:
         print("[upright] no rotated clips to bake")
@@ -433,6 +447,15 @@ def _title(parent, T, cfg, ref, lane, offset_f, dur_f, ts_id, text,
     return t
 
 
+def _shorten_title(elem, T, cfg, dur_f: int) -> None:
+    """Shorten an already-emitted title (and its fades) to dur_f frames."""
+    elem.set("duration", T.frames(dur_f))
+    fade_f = min(T.secs(cfg.titles.fade_s), dur_f // 3)
+    for tag in ("fadeIn", "fadeOut"):
+        for f in elem.iter(tag):
+            f.set("duration", T.frames(fade_f))
+
+
 # --- chapters ---------------------------------------------------------------
 
 def _yt_time(sec: float) -> str:
@@ -668,15 +691,24 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                 src_path = fixed      # _fixed copy preserves timecode + frame grid
                 c["frames"] = _probe_frames(fixed) or c["frames"]
         c["frames_sq"] = round(c["frames"] * c["scale"])
-        asset = ET.SubElement(resources, "asset", id=c["ref"],
-                              name=Path(c["name"]).stem,
-                              start=T.frames(c["media_start_f"]),
-                              duration=T.frames(c["frames_sq"]),
-                              hasVideo="1", hasAudio="1",
-                              format=fmt_ids[(c["fps_num"], c["fps_den"],
-                                              c["width"], c["height"])],
-                              videoSources="1", audioSources="1",
-                              audioChannels="2", audioRate="48000")
+        # A timelapse (DJI Osmo) has no audio track; claiming one gives FCP a
+        # phantom audio component. `audio` absent (manifest from an older probe)
+        # means "assume audio", and the attribute order below is unchanged, so
+        # existing projects still rebuild byte-identically.
+        c_audio = c.get("audio", True)
+        attrs = {"id": c["ref"], "name": Path(c["name"]).stem,
+                 "start": T.frames(c["media_start_f"]),
+                 "duration": T.frames(c["frames_sq"]),
+                 "hasVideo": "1"}
+        if c_audio:
+            attrs["hasAudio"] = "1"
+        attrs["format"] = fmt_ids[(c["fps_num"], c["fps_den"],
+                                   c["width"], c["height"])]
+        attrs["videoSources"] = "1"
+        if c_audio:
+            attrs |= {"audioSources": "1", "audioChannels": "2",
+                      "audioRate": "48000"}
+        asset = ET.SubElement(resources, "asset", **attrs)
         ET.SubElement(asset, "media-rep", kind="original-media",
                       src=_file_url(src_path))
 
@@ -709,7 +741,7 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
     stats = {"cuts": 0, "cut_s": 0.0, "markers": 0, "segments": 0,
              "transitions": 0, "day_dips": 0, "mutes": 0, "mute_s": 0.0,
              "speedups": 0, "speed_src_s": 0.0, "speed_saved_s": 0.0,
-             "chapters": 0, "highlights": 0, "music_s": 0.0}
+             "chapters": 0, "highlights": 0, "music_s": 0.0, "subs": 0}
 
     # [audio].level: even out camera audio — per-clip integrated loudness ->
     # a gentle per-segment adjust-volume toward target_lufs, clamped.
@@ -737,6 +769,12 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         hl_spans = [(max(0.0, float(h[0])), min(c["duration"], float(h[1])),
                      (str(h[2]).strip() if len(h) > 2 and h[2] else "highlight"))
                     for h in rc.get("highlight", []) if float(h[1]) > float(h[0])]
+        # subtitle spans ([[s0, s1, "text"], ...], by hand or from a transcript):
+        # each becomes a burned-in lower-third title over its span.
+        sub_spans = [(max(0.0, float(t[0])), min(c["duration"], float(t[1])),
+                      str(t[2]).strip())
+                     for t in rc.get("subs", [])
+                     if float(t[1]) > float(t[0]) and str(t[2]).strip()]
         # speed-up spans (boring transit/eating/driving, from `pace`): keep the
         # picture but play it faster and muted. Each entry is
         # [s0, s1, factor?, reason?]; a missing factor defaults to cfg.pace.factor.
@@ -778,8 +816,10 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                 "chapter": (rc.get("chapter") or "").strip(),
                 "clip_first": sidx == 0,
                 "marks": [(a, b, r) for (a, b, r) in marks if s0 <= a < s1],
+                "subs": [(a, b, t) for (a, b, t) in sub_spans if s0 <= a < s1],
                 "hls": [(a, b, l) for (a, b, l) in hl_spans if s0 <= a < s1],
                 "mutes": seg_mutes,
+                "audio": c.get("audio", True),
                 "gain_db": gains.get(c["name"], 0.0),
             })
 
@@ -855,6 +895,31 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
     prev_day = prev_loc = prev_chap = None
     chapter_pts = []          # (timeline seconds, label) at each chapter start
     highlight_pts = []        # (timeline seconds, label) at each ★ highlight
+    # ---- LOWER-THIRD CHANNEL (location titles + `subs` labels) ----
+    # A dated location lower-third (lane 1) and a `subs` label (lane 4) sit a few
+    # dozen pixels apart, so two of them at once read as one garbled block. Treat
+    # the lower third as ONE exclusive channel, in timeline frames: a location
+    # title is placed at its clip head (it announces the place, so it wins) and
+    # shortens — or drops — whatever is still showing; a label is flexible, so it
+    # slides to after the channel frees, and is skipped if too little is left.
+    lt_gap_f = T.secs(0.3)          # visible clear air between two lower-thirds
+    lt_min_f = T.secs(1.2)          # shorter than this reads as a flash: drop it
+    lt = {"elem": None, "parent": None, "start": 0, "end": -1 << 30}
+
+    def lt_free(at_f: int) -> None:
+        """Clear the lower third for a title starting at timeline frame at_f."""
+        if lt["elem"] is None or lt["end"] + lt_gap_f <= at_f:
+            return
+        new_dur = at_f - lt_gap_f - lt["start"]
+        if new_dur >= lt_min_f:
+            _shorten_title(lt["elem"], T, cfg, new_dur)
+            lt["end"] = lt["start"] + new_dur
+        else:
+            lt["parent"].remove(lt["elem"])
+            lt.update(elem=None, end=-1 << 30)
+
+    def lt_hold(elem, parent, start_f: int, end_f: int) -> None:
+        lt.update(elem=elem, parent=parent, start=start_f, end=end_f)
     for i, s in enumerate(segs):
         is_first = (i == 0)
         is_last = (i == len(segs) - 1)
@@ -885,14 +950,22 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         stats["segments"] += 1
 
         # ---- SPEED RAMP (retime, first in DTD order: timing-params) ----
-        # `time` is the output/timeline axis (clip-start-relative), `value` the
-        # source axis (also clip-start-relative, 0 = this clip's `start`). Mapping
-        # out_dur of timeline onto src_dur of source = constant factor playback.
+        # A timeMap REPLACES the clip's local timeline (DTD: "defines a new
+        # adjusted time range for the clip using the first and last timept").
+        # `time` is that new adjusted axis, `value` the original clip time — and
+        # the clip's own `start`/`duration` index into the ADJUSTED axis. So both
+        # axes must share this clip's origin (`vin`): `time` runs vin..vin+out_dur
+        # and `value` vin..vin+src_dur, mapping out_dur of timeline onto src_dur
+        # of source = constant factor playback.
+        # A 0s-based map (either axis) DTD-validates but makes FCP reject the
+        # import with "Invalid edit with no respective media" and drop the clip to
+        # a blank gap, because `start` then falls outside the adjusted axis.
         if factor != 1.0:
             tm = ET.SubElement(clip, "timeMap")
-            ET.SubElement(tm, "timept", time="0s", value="0s", interp="linear")
-            ET.SubElement(tm, "timept", time=T.frames(out_dur),
-                          value=T.frames(src_dur), interp="linear")
+            ET.SubElement(tm, "timept", time=T.frames(vin), value=T.frames(vin),
+                          interp="linear")
+            ET.SubElement(tm, "timept", time=T.frames(vin + out_dur),
+                          value=T.frames(vin + src_dur), interp="linear")
             stats["speedups"] += 1
             stats["speed_src_s"] += src_dur * T.d / T.n
             stats["speed_saved_s"] += (src_dur - out_dur) * T.d / T.n
@@ -916,7 +989,9 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
         # Speed sections are muted wholesale (sped audio is unusable). adjust-volume
         # is intrinsic-params-audio, so it follows adjust-blend (video) in DTD order
         # and is always honored on import (unlike srcEnable).
-        if factor != 1.0:
+        if not s.get("audio", True):
+            pass                                 # silent source (timelapse): nothing to adjust
+        elif factor != 1.0:
             ET.SubElement(clip, "adjust-volume", amount="-96dB")
         elif s["gain_db"]:                       # [audio].level loudness nudge
             ET.SubElement(clip, "adjust-volume", amount=f"{s['gain_db']:g}dB")
@@ -943,8 +1018,11 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
             if s["loc"] and s["loc"] != prev_loc:   # location lower-third, lane 1
                 stamp = ldt.strftime(tt.location_stamp_format) if ldt else ""
                 text = f"{s['loc']}\n{stamp}" if stamp else s["loc"]
-                _title(clip, T, cfg, "rTitle", 1, s["vin"], T.secs(tt.location_title_s),
-                       next_ts(), text, tt.location_font_size, tt.location_y)
+                loc_dur = T.secs(tt.location_title_s)
+                lt_free(cursor)                     # never stack two lower-thirds
+                el = _title(clip, T, cfg, "rTitle", 1, s["vin"], loc_dur,
+                            next_ts(), text, tt.location_font_size, tt.location_y)
+                lt_hold(el, clip, cursor, cursor + loc_dur)
                 prev_loc = s["loc"]
 
             # ---- MUSIC BED (connected to the first clip, lane -1) ----
@@ -980,6 +1058,25 @@ def build(cfg: Config, clips: list[dict], review: dict, out_path: Path) -> Path:
                                                             mdur_f // 2)))
                     pos += mdur_f
                     stats["music_s"] += mdur_f * T.d / T.n
+
+        # ---- SUBTITLES (lane 4, offsets in this clip's media time) ----
+        # A retimed segment is muted, so its speech is gone — no subs there.
+        if factor == 1.0:
+            for a, b, txt in s["subs"]:
+                a_f = max(s["msf"] + T.secs(a), vin)
+                b_f = min(s["msf"] + T.secs(b), vin + src_dur)
+                # slide clear of a location title still on the lower third rather
+                # than printing one over the other (timeline frame = cursor + offset)
+                busy = lt["end"] + lt_gap_f - (cursor - vin)     # in media frames
+                if a_f < busy:                  # slide the whole label, keeping
+                    b_f = min(b_f + busy - a_f, vin + src_dur)   # its length
+                    a_f = busy
+                if b_f - a_f < T.secs(1.0):
+                    continue           # trimmed away by a dissolve handle / a title
+                el = _title(clip, T, cfg, "rTitle", 4, a_f, b_f - a_f, next_ts(),
+                            txt, cfg.titles.sub_font_size, cfg.titles.sub_y)
+                lt_hold(el, clip, cursor + a_f - vin, cursor + b_f - vin)
+                stats["subs"] += 1
 
         # ---- CLOSING CARD (lane 3, ending with the final fade-out) ----
         # An anchor item, so it must precede this clip's chapter-marker/markers.

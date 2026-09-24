@@ -35,6 +35,26 @@ class Sheets:
 
 
 @dataclass
+class Stills:
+    """Photos folded into the film as Ken Burns montage clips (`holvid … stills`).
+
+    Photos closer together than `group_gap_s` share one montage, so a burst of
+    near-identical frames becomes a single quick-fire sequence instead of one
+    shot each."""
+    patterns: list[str] = field(default_factory=lambda: [
+        "*.HEIC", "*.heic", "*.JPG", "*.jpg", "*.JPEG", "*.jpeg", "*.PNG", "*.png",
+        "*/*.HEIC", "*/*.heic", "*/*.JPG", "*/*.jpg", "*/*.PNG", "*/*.png",
+    ])
+    group_gap_s: float = 60.0    # photos within this of each other -> one montage
+    per_photo_s: float = 4.0     # screen time per photo in a small group
+    burst_photo_s: float = 1.4   # …and in a burst (see burst_threshold)
+    burst_threshold: int = 4     # group size at which burst timing kicks in
+    xfade_s: float = 0.5         # crossfade between photos inside a montage
+    zoom: float = 1.12           # Ken Burns end zoom (1.0 = static)
+    bitrate: str = "80M"
+
+
+@dataclass
 class Titles:
     opening_s: float = 5.0          # opening movie-title duration over the first clip
     day_dividers: bool = True       # show a centered day-divider card on each new
@@ -52,6 +72,8 @@ class Titles:
     location_font_size: int = 60
     closing_font_size: int = 72
     location_y: float = -360.0      # lower-third vertical position (0 = centre)
+    sub_font_size: int = 44         # burned-in subtitle size (`subs` spans)
+    sub_y: float = -430.0           # subtitle vertical position
     font: str = "Helvetica Neue"
     # strftime patterns ("%-d" = no leading zero, macOS/Linux):
     date_format: str = "%A %-d %B %Y"          # day divider, e.g. "Thursday 28 May 2026"
@@ -107,7 +129,10 @@ class Sanitize:
     enabled: bool = False
     whisper_model: str = "mlx-community/whisper-large-v3-turbo"
     language: str = ""               # "" = auto-detect; or "en", "ko", …
-    ollama_model: str = "qwen3.6:35b-a3b-coding-mxfp8"
+    # A 37 GB model does not fit alongside its KV cache on a 48 GB Mac: measured
+    # 2026-08-19, qwen3.6:35b-a3b-coding-mxfp8 hit the 600 s timeout on a 6-line
+    # batch, while gemma4:latest returned in 7.7 s and got 6/6 right.
+    ollama_model: str = "gemma4:latest"
     ollama_url: str = "http://localhost:11434/api/generate"
     batch_lines: int = 12            # transcript lines per classification call
     min_mute_s: float = 0.4          # ignore detected spans shorter than this
@@ -346,6 +371,7 @@ class Config:
     geo: Geo = field(default_factory=Geo)
     cuts: Cuts = field(default_factory=Cuts)
     sheets: Sheets = field(default_factory=Sheets)
+    stills: Stills = field(default_factory=Stills)
     sanitize: Sanitize = field(default_factory=Sanitize)
     glitch: Glitch = field(default_factory=Glitch)
     pace: Pace = field(default_factory=Pace)
@@ -441,7 +467,7 @@ def _from_dict(klass, data: dict):
     # don't depend on `from __future__ import annotations` turning types to str.
     nested = {"discovery": Discovery, "timezone": Timezone, "titles": Titles,
               "transitions": Transitions, "music": Music, "geo": Geo,
-              "cuts": Cuts, "sheets": Sheets, "sanitize": Sanitize,
+              "cuts": Cuts, "sheets": Sheets, "stills": Stills, "sanitize": Sanitize,
               "glitch": Glitch, "pace": Pace, "chapters": Chapters,
               "highlight": Highlight, "audio": Audio}
     for name, sub in nested.items():

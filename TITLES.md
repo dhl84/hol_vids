@@ -37,6 +37,18 @@ auto text elides the shared month/year from the first date ("3 – 9 August 2026
 "28 May – 4 June 2026"); set `closing_text` to override. It is skipped on a movie
 too short to give it clear air after the opening (both live on lane 3).
 
+## One lower third at a time
+
+The dated location title (lane 1, `location_y`) and a `subs` label (lane 4,
+`sub_y`) sit a few dozen pixels apart, so two at once read as one garbled block.
+`build()` treats the lower third as a single exclusive channel, in timeline
+frames: a **location title wins** — it fires at its clip head and shortens (or
+drops, below ~1.2 s) whatever is still showing — while a **`subs` label slides**
+to after the channel frees, keeping its length, and is skipped if under 1 s of
+media is left. So a one-second clip no longer leaves its title hanging over the
+next place's title, and an animal label never prints over a dated lower-third.
+`check_titles.py <fcpxml>` re-checks a built timeline for both faults.
+
 ## Why each trigger is what it is
 
 - **Opening — once.** It's the movie's title card. Fires on `is_first` only, and

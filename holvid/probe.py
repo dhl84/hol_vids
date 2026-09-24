@@ -97,6 +97,12 @@ def probe_one(path: Path, cfg: Config) -> dict:
               else round(duration * num / den))
     tc = st.get("tags", {}).get("timecode") or fmt.get("tags", {}).get("timecode", "")
     creation_time = fmt.get("tags", {}).get("creation_time", "")
+    # Timelapse recordings (DJI Osmo) carry no audio track at all; the asset must
+    # not claim one or FCP imports a phantom audio component.
+    has_audio = bool(subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True).stdout.strip())
     dt, seq = _datetime_from(path, cfg, creation_time)
     return {
         "name": path.name,
@@ -110,6 +116,7 @@ def probe_one(path: Path, cfg: Config) -> dict:
         "width": st["width"], "height": st["height"],
         "timecode": tc,
         "creation_time": creation_time,
+        "audio": has_audio,
         "vfr": vfr,
     }
 

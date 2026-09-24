@@ -40,15 +40,25 @@ continuous-recording seams, cut-word list, …) is now a field in a per-trip
 ## The pipeline
 
 ```
-probe ──> sheets ──> (you/Claude fill review.json) ──┐
-                                                      ├─ [sanitize] [glitch] [pace] [chapters] [highlight] [geo] ──> [upright] ──> [heal] ──> build
-              (optional auto-analysis, any order) ────┘
+probe ──> [stills] ──> sheets ──> (you/Claude fill review.json) ──┐
+                                                                   ├─ [sanitize] [glitch] [pace] [chapters] [highlight] [geo] ──> [upright] ──> [heal] ──> build
+                           (optional auto-analysis, any order) ────┘
 ```
 
 1. **probe** — scan the footage, read each clip's wall-clock time, fps, duration
    and embedded timecode → `_edit/clips.json` (sorted chronologically). Warns
    about variable-frame-rate clips (typical of phones) — the frame math assumes
-   a constant rate, so conform those first or expect drift.
+   a constant rate, so conform those first or expect drift. Also records whether
+   each clip has an audio track: a timelapse has none, and an asset that claims
+   audio it doesn't have gives FCP a phantom audio component.
+   - **stills** *(optional, right after probe)* — fold the folder's **photos** into the film. Photos
+   within `[stills].group_gap_s` of each other become one Ken Burns montage
+   clip (so a nine-frame burst is one beat, not nine shots), stamped with the
+   group's capture time so `probe` places it chronologically among the video —
+   downstream, a montage is just another clip. Portrait photos are centred over
+   a blurred copy of themselves instead of black bars. HEIC is decoded with
+   macOS `sips`, because ffmpeg reads only the small preview tile inside a HEIC.
+   **Re-run `probe` afterwards** to pick the montages up.
 2. **sheets** — sample a frame every few seconds and tile them into contact
    sheets → `_edit/sheets/`. These are what you (or Claude) read to know what's
    in each clip. Tile position encodes the timecode exactly (no burned-in text
